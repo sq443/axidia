@@ -2,9 +2,11 @@
 //   { bpm, beatMs, duration (ms), notes: [{ type, side, time (ms), x (0..1), end? (ms, hold only) }] }
 //   side: 'bottom' — falls from the top edge to the bottom judgment line
 //         'top'    — rises from the bottom edge to the top judgment line (vertical mirror)
-//   type: 'tap'  — tap when it reaches the line
-//         'drag' — just have a finger on it when it reaches the line (no tap needed)
-//         'hold' — tap the head, keep a finger on it until `end`
+//         'center' — flick only: a diamond in the middle of the screen
+//   type: 'tap'   — tap when it reaches the line
+//         'drag'  — just have a finger on it when it reaches the line (no tap needed)
+//         'hold'  — tap the head, keep a finger on it until `end`
+//         'flick' — move a touching finger in any direction when the diamond guide closes in
 // Free lane: x is the note's center as a fraction of the field width; there are no fixed lanes.
 // For now charts are generated from a fixed seed so every play of a difficulty is identical.
 
@@ -14,13 +16,19 @@ const BPM = 140;
 const BARS = 32;
 
 export const DIFFICULTIES = {
-  EASY: { seed: 11, patterns: ['half', 'quarter', 'holdSimple', 'dragSweep', 'halfDouble', 'mirrorHalf'] },
+  EASY: {
+    seed: 34,
+    flick: 0.3,
+    patterns: ['half', 'quarter', 'holdSimple', 'dragSweep', 'halfDouble', 'mirrorHalf'],
+  },
   NORMAL: {
-    seed: 6,
+    seed: 46,
+    flick: 0.4,
     patterns: ['quarter', 'eighthStair', 'zigzag', 'quarterDouble', 'holdSimple', 'dragWave', 'holdTaps', 'mirror'],
   },
   HARD: {
-    seed: 104,
+    seed: 131,
+    flick: 0.5,
     patterns: [
       'eighthStair', 'zigzag', 'quarterDouble', 'burst', 'eighthDouble', 'dragZig', 'holdTaps', 'mirror', 'seesaw',
     ],
@@ -205,7 +213,7 @@ export function generateChart(difficulty) {
   const rng = mulberry32(def.seed);
   const beatMs = 60000 / BPM;
   const state = { x: 0.5, hard: difficulty === 'HARD' };
-  const raw = [];
+  let raw = [];
 
   // Bar 0 is lead-in. Phrases are 2 bars; the second bar mirrors the first horizontally,
   // and sometimes answers on the other judgment line.
@@ -221,8 +229,16 @@ export function generateChart(difficulty) {
       if (bar + 1 < BARS) raw.push([(bar + 1) * 4 + beat, 1 - x, type, len, other ? flip(sideB) : sideB]);
     }
     state.x = 1 - state.x;
+
+    // Some phrases open with a center flick, which takes over that beat (unless a hold starts there).
+    const fb = bar * 4;
+    const flick = !intro && (bar === 5 || rng() < def.flick);
+    if (flick && !raw.some((r) => r[0] === fb && r[2] === 'hold')) {
+      raw = raw.filter((r) => r[0] !== fb);
+      raw.push([fb, 0.5, 'flick', 0, 'center']);
+    }
   }
-  raw.push([BARS * 4, 0.5, 'tap', 0, 'bottom'], [BARS * 4, 0.5, 'tap', 0, 'top']); // final notes
+  raw.push([BARS * 4, 0.5, 'flick', 0, 'center']); // finale
 
   const notes = raw
     .map(([beat, x, type, len, side]) => {

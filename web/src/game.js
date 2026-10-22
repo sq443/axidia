@@ -3,14 +3,15 @@ import * as sfx from './sfx.js';
 // Timing windows (ms, ± from the exact note time).
 export const WINDOW = { PERFECT: 45, GREAT: 90, GOOD: 135 };
 const WEIGHT = { PERFECT: 1, GREAT: 0.7, GOOD: 0.3, MISS: 0 };
+// Judgments are shown only through hit effects, so each has its own color and strength.
 const COLOR = {
   PERFECT: '#7cf5ff',
   GREAT: '#f2f2f2',
-  GOOD: '#9a9a9a',
+  GOOD: '#8a8a8e',
   MISS: '#ff5d6c',
 };
-const NOTE_COLOR = { tap: '#f2f2f2', hold: '#f2f2f2', drag: '#ffd84d' };
-const GLOW_COLOR = { tap: 'rgba(242,242,242,0.75)', hold: 'rgba(242,242,242,0.75)', drag: 'rgba(255,216,77,0.8)' };
+const NOTE_COLOR = { tap: '#f2f2f2', hold: '#f2f2f2', drag: '#ffd84d', flick: '#f2f2f2' };
+const CHORD_GLOW = 'rgba(170,236,255,0.95)'; // pale cyan halo on simultaneous notes
 
 const NOTE_W = 0.11; // note width, fraction of field width
 const NOTE_H = 10; // px
@@ -18,11 +19,13 @@ const DRAG_H = 7; // px
 const HIT_SLACK = 0.04; // extra horizontal tolerance on each side, fraction of field width
 const HOLD_SLACK = 0.07; // looser tolerance for keeping a hold
 const RELEASE_GRACE = 150; // ms before a hold's end where letting go still counts
+const FLICK_MOVE = 4; // px a touching finger must move in one event to count as a flick
 // Judgment lines, fraction of screen height. Notes for the bottom line fall from the top edge;
 // notes for the top line rise from the bottom edge. Touches in each half of the screen play that half's line.
 const LINE_Y = { top: 0.2, bottom: 0.8 };
 const BASE_APPROACH = 3000; // ms from the screen edge to the line at speed 1.0
 const COUNTDOWN = 1500; // ms before play resumes after pause
+const EFFECT_MS = 420;
 
 export class Game {
   constructor(canvas, { onEnd }) {
@@ -31,7 +34,7 @@ export class Game {
     this.onEnd = onEnd;
     this.running = false;
     this.paused = false;
-    this.pointers = new Map(); // pointerId -> { x (field fraction), side }
+    this.pointers = new Map(); // pointerId -> { x (field fraction), side, px, py }
     this.frame = this.frame.bind(this);
 
     this.resize();
@@ -62,6 +65,7 @@ export class Game {
     this.fieldW = Math.min(w - margin * 2, h * 1.8);
     this.fieldX = (w - this.fieldW) / 2;
     this.lineY = { top: Math.round(h * LINE_Y.top), bottom: Math.round(h * LINE_Y.bottom) };
+    this.flickSize = Math.min(28, h * 0.07); // half-diagonal of the flick diamond
     if (this.running) this.draw(this.songTime(performance.now()), performance.now());
   }
 
@@ -79,12 +83,12 @@ export class Game {
     this.points = 0;
     this.combo = 0;
     this.maxCombo = 0;
+    this.comboAt = 0;
     this.head = 0; // first note that may still be unjudged
     this.holding = []; // holds whose head was hit and are being held
     this.fading = []; // holds that were missed or released, still drawn while they move away
     this.effects = [];
     this.taps = [];
-    this.lastJudge = null;
     this.pointers.clear();
 
     const first = this.notes.length ? this.notes[0].time : 0;
@@ -127,7 +131,7 @@ export class Game {
     const t = this.songTime(now);
     if (!this.paused) {
       for (const p of this.pointers.values()) this.catchDrags(t, p.x, p.x, p.side);
-      this.resolveDrags(t);
+      this.resolveCaught(t);
       this.updateHolds(t);
       this.sweepMisses(t);
     }
@@ -146,14 +150,15 @@ export class Game {
   fieldPos(e) {
     const rect = this.canvas.getBoundingClientRect();
     const px = e.clientX - rect.left;
-    const side = e.clientY - rect.top < this.h / 2 ? 'top' : 'bottom';
-    return { px, fx: (px - this.fieldX) / this.fieldW, side };
+    const py = e.clientY - rect.top;
+    const side = py < this.h / 2 ? 'top' : 'bottom';
+    return { px, py, fx: (px - this.fieldX) / this.fieldW, side };
   }
 
   onDown(e) {
     e.preventDefault();
-    const { px, fx, side } = this.fieldPos(e);
-    this.pointers.set(e.pointerId, { x: fx, side });
+    const { px, py, fx, side } = this.fieldPos(e);
+    this.pointers.set(e.pointerId, { x: fx, side, px, py });
     if (!this.running || this.paused) return;
     // event.timeStamp shares performance.now()'s clock in modern browsers and is closer to the real touch.
     const pnow = performance.now();
@@ -167,7 +172,7 @@ export class Game {
     for (let i = this.head; i < this.notes.length; i++) {
       const n = this.notes[i];
       if (n.time - t > WINDOW.GOOD) break;
-      if (n.judged || n.type === 'drag' || n.side !== side) continue;
+      if (n.judged || n.side !== side || (n.type !== 'tap' && n.type !== 'hold')) continue;
       const dt = t - n.time;
       const dx = Math.abs(fx - n.x);
       if (Math.abs(dt) > WINDOW.GOOD || dx > NOTE_W / 2 + HIT_SLACK) continue;
@@ -187,12 +192,14 @@ export class Game {
   onMove(e) {
     const prev = this.pointers.get(e.pointerId);
     if (!prev) return;
-    const { fx, side } = this.fieldPos(e);
-    this.pointers.set(e.pointerId, { x: fx, side });
+    const { px, py, fx, side } = this.fieldPos(e);
+    this.pointers.set(e.pointerId, { x: fx, side, px, py });
+    if (!this.running || this.paused) return;
+    const t = performance.now() - this.startAt;
     // Check the whole swept segment so fast slides don't skip over drag notes between frames.
-    if (this.running && !this.paused && side === prev.side) {
-      this.catchDrags(performance.now() - this.startAt, Math.min(prev.x, fx), Math.max(prev.x, fx), side);
-    }
+    if (side === prev.side) this.catchDrags(t, Math.min(prev.x, fx), Math.max(prev.x, fx), side);
+    // Any touching finger moving in any direction flicks.
+    if (Math.hypot(px - prev.px, py - prev.py) >= FLICK_MOVE) this.catchFlicks(t);
   }
 
   // Mark drag notes near the line that a finger is touching (anywhere in [lo, hi] on that side).
@@ -207,12 +214,20 @@ export class Game {
     }
   }
 
-  // Caught drags score PERFECT exactly when they reach the line.
-  resolveDrags(t) {
+  catchFlicks(t) {
+    for (let i = this.head; i < this.notes.length; i++) {
+      const n = this.notes[i];
+      if (n.time - t > WINDOW.GOOD) break;
+      if (n.type === 'flick' && !n.judged && Math.abs(t - n.time) <= WINDOW.GOOD) n.caught = true;
+    }
+  }
+
+  // Caught drags and flicks score PERFECT exactly when they reach their timing.
+  resolveCaught(t) {
     for (let i = this.head; i < this.notes.length; i++) {
       const n = this.notes[i];
       if (n.time > t) break;
-      if (n.type === 'drag' && n.caught && !n.judged) this.judge(n, 'PERFECT', 0);
+      if (n.caught && !n.judged) this.judge(n, 'PERFECT', 0);
     }
   }
 
@@ -263,17 +278,17 @@ export class Game {
   record(j, dt, n, type) {
     this.stats[j]++;
     this.points += WEIGHT[j];
+    const at = performance.now();
     if (j === 'MISS') {
       this.combo = 0;
     } else {
       this.combo++;
+      this.comboAt = at;
       this.maxCombo = Math.max(this.maxCombo, this.combo);
       if (j !== 'PERFECT') this.stats[dt < 0 ? 'fast' : 'slow']++;
-      sfx.tap(type === 'tap' && j === 'PERFECT' ? 1 : 0.6);
+      sfx.tap((type === 'tap' || type === 'flick') && j === 'PERFECT' ? 1 : 0.6);
     }
-    const at = performance.now();
-    this.lastJudge = { j, dt, at };
-    this.effects.push({ x: n.x, side: n.side, j, type, at });
+    this.effects.push({ x: n.x, side: n.side, j, type, at, sparks: sparks(j, type) });
   }
 
   score() {
@@ -331,6 +346,13 @@ export class Game {
     ctx.fillStyle = 'rgba(255,255,255,0.06)';
     for (const p of this.pointers.values()) column(fieldX + p.x * fieldW, p.side, nw / 2);
 
+    // flicks sit underneath everything that moves
+    for (let i = this.head; i < this.notes.length; i++) {
+      const n = this.notes[i];
+      if (n.time - t > this.approach) break;
+      if (n.type === 'flick' && !n.judged) this.drawFlick(n, t);
+    }
+
     // holds that broke: dim, keep moving away
     this.fading = this.fading.filter((n) => {
       const y = this.yAt(n.end, t, n.side);
@@ -341,11 +363,11 @@ export class Game {
     // holds being held: head pinned to the line
     for (const n of this.holding) this.drawHold(n, t, { held: true, now });
 
-    // incoming notes
+    // incoming line notes
     for (let i = this.head; i < this.notes.length; i++) {
       const n = this.notes[i];
       if (n.time - t > this.approach) break;
-      if (n.judged) continue;
+      if (n.judged || n.type === 'flick') continue;
       if (n.type === 'hold') {
         this.drawHold(n, t, {});
         continue;
@@ -359,34 +381,44 @@ export class Game {
       ctx.shadowBlur = 0;
     }
 
-    // hit effects
-    this.effects = this.effects.filter((ef) => now - ef.at < 320);
-    for (const ef of this.effects) {
-      const k = (now - ef.at) / 320;
-      const cx = fieldX + ef.x * fieldW;
-      const y = lineY[ef.side];
-      ctx.globalAlpha = 1 - k;
-      if (ef.j === 'MISS') {
-        ctx.fillStyle = COLOR.MISS;
-        ctx.fillRect(cx - nw / 2, y - 1, nw, 2);
-      } else {
-        ctx.strokeStyle = ef.type === 'drag' ? NOTE_COLOR.drag : COLOR[ef.j];
-        ctx.lineWidth = 2;
-        const ew = nw * (1 + 0.5 * k);
-        const eh = NOTE_H + 26 * k;
-        ctx.strokeRect(cx - ew / 2, y - eh / 2, ew, eh);
-      }
-      ctx.globalAlpha = 1;
-    }
+    this.effects = this.effects.filter((ef) => now - ef.at < EFFECT_MS);
+    for (const ef of this.effects) this.drawEffect(ef, now);
 
     this.drawHud(t, now);
   }
 
-  // Soft halo for chord notes. Caller resets shadowBlur after drawing.
+  // Pale cyan halo for chord notes. Caller resets shadowBlur after drawing.
   glow(n) {
     if (!n.chord) return;
-    this.ctx.shadowColor = GLOW_COLOR[n.type];
-    this.ctx.shadowBlur = 14;
+    this.ctx.shadowColor = CHORD_GLOW;
+    this.ctx.shadowBlur = 20;
+  }
+
+  // The flick diamond fades in at the center; a diamond guide zooms in from beyond the screen
+  // edges and meets it exactly on time.
+  drawFlick(n, t) {
+    const { ctx, w, h } = this;
+    const cx = w / 2;
+    const cy = h / 2;
+    const s = this.flickSize;
+    const k = Math.max(0, (n.time - t) / this.approach); // 1 → just appeared, 0 → now
+    const alpha = Math.min(1, (1 - k) / 0.5);
+
+    const far = w / 2 + h / 2 + 20; // a diamond this big has its edges outside the screen
+    ctx.globalAlpha = alpha * 0.6;
+    ctx.strokeStyle = '#f2f2f2';
+    ctx.lineWidth = 1.5;
+    diamond(ctx, cx, cy, s + (far - s) * k);
+    ctx.stroke();
+
+    ctx.globalAlpha = alpha;
+    ctx.lineWidth = 3;
+    diamond(ctx, cx, cy, s);
+    ctx.stroke();
+    ctx.fillStyle = NOTE_COLOR.flick;
+    diamond(ctx, cx, cy, s * 0.36);
+    ctx.fill();
+    ctx.globalAlpha = 1;
   }
 
   drawHold(n, t, { held = false, alpha = 1, now = 0 }) {
@@ -420,6 +452,94 @@ export class Game {
     ctx.globalAlpha = 1;
   }
 
+  // Hit effects carry the judgment: PERFECT is a big cyan burst with a beam and sparks,
+  // GREAT a white burst, GOOD a small gray ring, MISS a red crack on the line.
+  drawEffect(ef, now) {
+    const { ctx, fieldX, fieldW } = this;
+    const k = (now - ef.at) / EFFECT_MS;
+    const ease = 1 - (1 - k) * (1 - k); // fast out, slow settle
+    const fade = 1 - k;
+    const color = ef.type === 'drag' && ef.j === 'PERFECT' ? NOTE_COLOR.drag : COLOR[ef.j];
+    const strong = ef.j === 'PERFECT' ? 1 : ef.j === 'GREAT' ? 0.65 : 0.35;
+
+    let cx;
+    let cy;
+    let inward; // direction toward the middle of the screen (+1 down, -1 up, 0 for flicks)
+    if (ef.side === 'center') {
+      cx = this.w / 2;
+      cy = this.h / 2;
+      inward = 0;
+    } else {
+      cx = fieldX + ef.x * fieldW;
+      cy = this.lineY[ef.side];
+      inward = ef.side === 'top' ? 1 : -1;
+    }
+
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+
+    if (ef.j === 'MISS') {
+      const nw = fieldW * NOTE_W;
+      ctx.globalAlpha = fade;
+      if (inward === 0) {
+        ctx.lineWidth = 2;
+        diamond(ctx, cx, cy, this.flickSize * (1 - 0.3 * ease));
+        ctx.stroke();
+      } else {
+        ctx.fillRect(cx - nw * 0.6, cy - 1.5, nw * 1.2, 3);
+        ctx.fillRect(cx - 1, cy + inward * 4 * ease, 2, inward * 10); // drop
+      }
+      ctx.restore();
+      return;
+    }
+
+    if (inward === 0) {
+      // flick: diamond shockwave
+      const s = this.flickSize;
+      ctx.globalAlpha = 0.3 * fade;
+      diamond(ctx, cx, cy, s * (1 + 0.6 * ease));
+      ctx.fill();
+      ctx.globalAlpha = fade;
+      ctx.lineWidth = 3 * fade + 1;
+      diamond(ctx, cx, cy, s * (1 + 2.2 * ease));
+      ctx.stroke();
+    } else {
+      const nw = fieldW * NOTE_W;
+      // flash on the line
+      ctx.globalAlpha = 0.45 * strong * fade;
+      ctx.fillRect(cx - nw / 2, cy - NOTE_H, nw, NOTE_H * 2);
+      // beam toward the middle (PERFECT / GREAT)
+      if (ef.j !== 'GOOD') {
+        const len = 90 * strong * (1 - 0.4 * k);
+        const g = ctx.createLinearGradient(0, cy, 0, cy + inward * len);
+        g.addColorStop(0, color);
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = g;
+        ctx.globalAlpha = 0.35 * strong * fade;
+        const bw = nw * (0.9 - 0.4 * k);
+        ctx.fillRect(cx - bw / 2, Math.min(cy, cy + inward * len), bw, len);
+        ctx.fillStyle = color;
+      }
+      // expanding ring
+      ctx.globalAlpha = fade;
+      ctx.lineWidth = 1 + 2 * strong;
+      const ew = nw * (1 + 0.8 * strong * ease);
+      const eh = NOTE_H + 44 * strong * ease;
+      ctx.strokeRect(cx - ew / 2, cy - eh / 2, ew, eh);
+    }
+
+    // sparks: small diamonds flying away from the hit
+    ctx.globalAlpha = fade;
+    for (const sp of ef.sparks) {
+      const dist = sp.speed * ease;
+      const dy = inward === 0 ? Math.sin(sp.angle) * dist : inward * Math.abs(Math.sin(sp.angle)) * dist;
+      diamond(ctx, cx + Math.cos(sp.angle) * dist, cy + dy, sp.size * (1 - 0.5 * k));
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
   drawHud(t, now) {
     const { ctx, w, h, fieldX, fieldW } = this;
     const cx = fieldX + fieldW / 2;
@@ -438,32 +558,18 @@ export class Game {
     ctx.font = '300 20px system-ui, -apple-system, sans-serif';
     ctx.fillText(String(this.score()).padStart(7, '0'), fieldX + fieldW - 4, 14);
 
-    // combo + judgment, centered between the two lines
+    // combo, top center above the top line; pops briefly on each hit
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    const midY = h / 2;
+    const comboY = this.lineY.top / 2 - 6;
     if (this.combo >= 2) {
-      ctx.fillStyle = 'rgba(242,242,242,0.35)'; // faint so notes passing behind stay readable
-      ctx.font = '200 48px system-ui, -apple-system, sans-serif';
-      ctx.fillText(String(this.combo), cx, midY - 14);
-      ctx.fillStyle = 'rgba(242,242,242,0.3)';
-      ctx.font = '500 10px system-ui, -apple-system, sans-serif';
-      ctx.fillText('C O M B O', cx, midY + 18);
-    }
-    const lj = this.lastJudge;
-    if (lj && now - lj.at < 450) {
-      const k = (now - lj.at) / 450;
-      const pop = 1 + 0.15 * Math.max(0, 1 - k * 4);
-      ctx.globalAlpha = 1 - k * k;
-      ctx.fillStyle = COLOR[lj.j];
-      ctx.font = `500 ${Math.round(14 * pop)}px system-ui, -apple-system, sans-serif`;
-      ctx.fillText(spaced(lj.j), cx, midY + 40);
-      if (lj.j === 'GREAT' || lj.j === 'GOOD') {
-        ctx.font = '500 10px system-ui, -apple-system, sans-serif';
-        ctx.fillStyle = lj.dt < 0 ? '#7cb8ff' : '#ffb27c';
-        ctx.fillText(lj.dt < 0 ? 'FAST' : 'SLOW', cx, midY + 56);
-      }
-      ctx.globalAlpha = 1;
+      const pop = 1 + 0.12 * Math.max(0, 1 - (now - this.comboAt) / 120);
+      ctx.fillStyle = 'rgba(242,242,242,0.85)';
+      ctx.font = `300 ${Math.round(26 * pop)}px system-ui, -apple-system, sans-serif`;
+      ctx.fillText(String(this.combo), cx, comboY);
+      ctx.fillStyle = 'rgba(242,242,242,0.35)';
+      ctx.font = '500 9px system-ui, -apple-system, sans-serif';
+      ctx.fillText('C O M B O', cx, comboY + 21);
     }
 
     // ready / countdown
@@ -472,17 +578,35 @@ export class Game {
       ctx.fillRect(0, 0, w, h);
       ctx.fillStyle = '#f2f2f2';
       ctx.font = '200 64px system-ui, -apple-system, sans-serif';
-      ctx.fillText(String(Math.ceil((this.resumeAt - now) / (COUNTDOWN / 3))), cx, midY);
+      ctx.fillText(String(Math.ceil((this.resumeAt - now) / (COUNTDOWN / 3))), cx, h / 2);
     } else if (t < -300 && !this.paused) {
       ctx.fillStyle = 'rgba(242,242,242,0.6)';
       ctx.font = '400 13px system-ui, -apple-system, sans-serif';
-      ctx.fillText('R E A D Y', cx, midY);
+      ctx.fillText('R E A D Y', cx, h / 2);
     }
   }
 }
 
-function spaced(s) {
-  return s.split('').join(' ');
+function sparks(j, type) {
+  const count = j === 'PERFECT' ? (type === 'flick' ? 10 : 6) : j === 'GREAT' ? 3 : 0;
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    out.push({
+      angle: type === 'flick' ? (i / count) * Math.PI * 2 + Math.random() * 0.4 : Math.PI * (0.1 + 0.8 * Math.random()),
+      speed: (type === 'flick' ? 70 : 34) + Math.random() * 30,
+      size: 2 + Math.random() * 2,
+    });
+  }
+  return out;
+}
+
+function diamond(ctx, cx, cy, r) {
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - r);
+  ctx.lineTo(cx + r, cy);
+  ctx.lineTo(cx, cy + r);
+  ctx.lineTo(cx - r, cy);
+  ctx.closePath();
 }
 
 function roundRect(ctx, x, y, w, h, r) {

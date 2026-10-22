@@ -143,6 +143,16 @@ button {
   box-shadow: 0 -6px 0 -1px rgba(242, 242, 242, 0.3);
 }
 
+.legend .n-flick {
+  width: 10px;
+  height: 10px;
+  margin: 0 18px 0 8px;
+  border-radius: 0;
+  background: none;
+  border: 2px solid var(--fg);
+  transform: rotate(45deg);
+}
+
 .legend .n-drag {
   height: 4px;
   background: var(--drag);
