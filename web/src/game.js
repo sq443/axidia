@@ -25,6 +25,9 @@ const SLIDE_REACH = 100; // px from a slide's start / end point that a finger ma
 const SLIDE_ALIGN = 0.5; // cos of the max angle between the finger's travel and the slide (60°)
 const SLIDE_MOTION_MS = 150; // how long a finger's last motion direction stays valid
 const SLIDE_LEAD_BEATS = 1; // the slide's guide appears this many beats before it starts
+const SLIDE_END = { PERFECT: 250, GREAT: 400 }; // ms, ± around a slide's end time
+const MID_SPACING = 70; // px between a slide's invisible midpoints (at least 2 per slide)
+const MID_REACH = 40; // px a finger must pass within to clear a midpoint
 const SHOW_ANCHORS = true; // debug: draw the six slide anchor points
 // Judgment lines, fraction of screen height. Notes for the bottom line fall from the top edge;
 // notes for the top line rise from the bottom edge. Touches in each half of the screen play that half's line.
@@ -85,8 +88,8 @@ export class Game {
 
   start(chart, { speed }) {
     this.chart = chart;
-    // A slide is judged at two checkpoints, its start and its end (each like a drag);
-    // the pace in between is free. The slide itself is kept for drawing.
+    // A slide is judged at two points, its start and its end; the pace in between is free, but the
+    // finger has to pass its invisible midpoints. The slide itself is kept for drawing.
     this.slides = [];
     const notes = [];
     for (const n of chart.notes) {
@@ -96,8 +99,11 @@ export class Game {
       }
       // done: furthest point (0..1) traced so far; finger / origin: the pointer that took the start
       const slide = { ...n, done: 0, finger: null, origin: null };
+      const count = Math.max(2, Math.round(this.slideDir(slide).len / MID_SPACING) - 1);
+      slide.mids = Array.from({ length: count }, (_, i) => ({ u: (i + 1) / (count + 1), passed: false }));
+      slide.points = [0, 1].map((u) => ({ type: 'slide', side: 'free', slide, u, time: u ? n.end : n.time, judged: null }));
       this.slides.push(slide);
-      for (const u of [0, 1]) notes.push({ type: 'slide', side: 'free', slide, u, time: u ? n.end : n.time, judged: null });
+      notes.push(...slide.points);
     }
     this.notes = notes.sort((a, b) => a.time - b.time);
     // Notes sharing a time are chords: they glow so they read as "hit together".
@@ -235,6 +241,11 @@ export class Game {
     const t = pnow - this.startAt;
     // Check the whole swept segment so fast slides don't skip over drag notes between frames.
     if (side === prev.side) this.catchDrags(t, Math.min(prev.x, fx), Math.max(prev.x, fx), side);
+    for (const sl of this.slides) {
+      if (this.slideActive(sl, t) && (sl.finger === null || sl.finger === e.pointerId)) {
+        this.passMids(sl, prev.px, prev.py, px, py);
+      }
+    }
     this.catchSlides(t);
     // A finger moving in any direction near the center diamond flicks.
     if (dist >= FLICK_MOVE && (this.nearFlick(px, py) || this.nearFlick(prev.px, prev.py))) this.catchFlicks(t);
@@ -256,49 +267,83 @@ export class Game {
     }
   }
 
-  // Start: any finger near the start point on time (it may rest there).
-  // End: a finger near the end point on time that got there going from `from` toward `to` —
-  // the finger that took the start must have traveled that way overall (so it may arrive early
-  // and wait); any other finger must be moving that way right now.
+  // Slides are judged loosely:
+  // - Start: PERFECT if a finger is near the start point at any time from when the guide appears
+  //   until the end point stops accepting. The first such finger becomes the slide's finger.
+  // - Midpoints (invisible, not judged): the finger must pass them; skipping one is fine, but
+  //   two in a row makes the end MISS.
+  // - End: a finger near the end point that got there going from `from` toward `to` (the slide's
+  //   finger must have traveled that way overall; any other finger must be moving that way now).
+  //   ±SLIDE_END.PERFECT → PERFECT, up to ±SLIDE_END.GREAT → GREAT, otherwise MISS. Arriving early
+  //   and staying until the PERFECT window opens is PERFECT.
   catchSlides(t) {
     const now = performance.now();
-    for (let i = this.head; i < this.notes.length; i++) {
-      const n = this.notes[i];
-      if (n.time - t > WINDOW.GREAT) break;
-      if (n.type !== 'slide' || n.judged || n.caught || t - n.time > WINDOW.GOOD) continue;
-      const sl = n.slide;
-      const pos = this.slidePos(sl, n.u);
-      const { ux, uy } = this.slideDir(sl);
+    for (const sl of this.slides) {
+      if (!this.slideActive(sl, t)) continue;
+      if (sl.finger !== null && !this.pointers.has(sl.finger)) sl.finger = null; // lifted
       for (const [id, p] of this.pointers) {
-        if (Math.hypot(p.px - pos.x, p.py - pos.y) > SLIDE_REACH) continue;
-        if (n.u === 0) {
-          n.caught = true;
+        if (sl.finger === null || id === sl.finger) this.passMids(sl, p.px, p.py, p.px, p.py);
+      }
+
+      const [start, end] = sl.points;
+      if (!start.judged && !start.caught) {
+        const a = this.anchors[sl.from];
+        for (const [id, p] of this.pointers) {
+          if (Math.hypot(p.px - a.x, p.py - a.y) > SLIDE_REACH) continue;
+          start.caught = true;
           sl.finger = id;
           sl.origin = { x: p.px, y: p.py };
           break;
         }
-        let aligned = now - p.movedAt < SLIDE_MOTION_MS && p.dx * ux + p.dy * uy >= SLIDE_ALIGN;
-        if (id === sl.finger) {
-          const tx = p.px - sl.origin.x;
-          const ty = p.py - sl.origin.y;
-          const dist = Math.hypot(tx, ty);
-          aligned ||= dist > 0 && (tx * ux + ty * uy) / dist >= SLIDE_ALIGN;
-        }
-        if (aligned) {
-          n.caught = true;
-          break;
+      }
+
+      if (!end.judged && !end.caught) {
+        const dt = t - end.time;
+        if (dt >= -SLIDE_END.GREAT) {
+          const ready = this.slideEndReady(sl, now);
+          if (ready && dt < -SLIDE_END.PERFECT) end.early = true;
+          else if (ready && dt <= SLIDE_END.PERFECT) end.caught = true; // PERFECT on time
+          else if (ready || end.early) this.judge(end, 'GREAT', dt); // late, or left while early
         }
       }
-    }
-    // Light up the slide up to where its finger is (purely visual).
-    for (const sl of this.slides) {
+
+      // Light up the slide up to where its finger is (purely visual).
       const p = sl.finger !== null && this.pointers.get(sl.finger);
-      if (!p || t < sl.time - WINDOW.GOOD || t > sl.end + WINDOW.GOOD) continue;
-      const a = this.anchors[sl.from];
-      const { ux, uy, len } = this.slideDir(sl);
-      const u = ((p.px - a.x) * ux + (p.py - a.y) * uy) / len;
-      sl.done = Math.max(sl.done, Math.min(1, u));
+      if (p && t >= sl.time - WINDOW.GOOD) {
+        const a = this.anchors[sl.from];
+        const { ux, uy, len } = this.slideDir(sl);
+        sl.done = Math.max(sl.done, Math.min(1, ((p.px - a.x) * ux + (p.py - a.y) * uy) / len));
+      }
     }
+  }
+
+  slideActive(sl, t) {
+    return t >= sl.time - this.chart.beatMs * SLIDE_LEAD_BEATS && t <= sl.end + SLIDE_END.GREAT;
+  }
+
+  passMids(sl, x1, y1, x2, y2) {
+    for (const m of sl.mids) {
+      if (!m.passed && segDist(this.slidePos(sl, m.u), x1, y1, x2, y2) <= MID_REACH) m.passed = true;
+    }
+  }
+
+  slideEndReady(sl, now) {
+    for (let i = 0; i + 1 < sl.mids.length; i++) {
+      if (!sl.mids[i].passed && !sl.mids[i + 1].passed) return false; // skipped two in a row
+    }
+    const b = this.anchors[sl.to];
+    const { ux, uy } = this.slideDir(sl);
+    for (const [id, p] of this.pointers) {
+      if (Math.hypot(p.px - b.x, p.py - b.y) > SLIDE_REACH) continue;
+      if (now - p.movedAt < SLIDE_MOTION_MS && p.dx * ux + p.dy * uy >= SLIDE_ALIGN) return true;
+      if (id === sl.finger && sl.origin) {
+        const tx = p.px - sl.origin.x;
+        const ty = p.py - sl.origin.y;
+        const dist = Math.hypot(tx, ty);
+        if (dist > 0 && (tx * ux + ty * uy) / dist >= SLIDE_ALIGN) return true;
+      }
+    }
+    return false;
   }
 
   slideDir(slide) {
@@ -352,20 +397,25 @@ export class Game {
     });
   }
 
+  // How long after its time a note can still be taken.
+  lateLimit(n) {
+    if (n.type !== 'slide') return WINDOW.GOOD;
+    return n.u === 0 ? n.slide.end - n.time + SLIDE_END.GREAT : SLIDE_END.GREAT;
+  }
+
   sweepMisses(t) {
     const notes = this.notes;
-    while (this.head < notes.length) {
-      const n = notes[this.head];
-      if (!n.judged) {
-        if (t - n.time <= WINDOW.GOOD) break;
-        this.judge(n, 'MISS', 0);
-        if (n.type === 'hold') {
-          this.record('MISS', 0, n, 'hold'); // tail is lost with the head
-          this.fading.push(n);
-        }
+    // Every limit is at least WINDOW.GOOD, so only notes older than that can be missed.
+    for (let i = this.head; i < notes.length && notes[i].time < t - WINDOW.GOOD; i++) {
+      const n = notes[i];
+      if (n.judged || t - n.time <= this.lateLimit(n)) continue;
+      this.judge(n, 'MISS', 0);
+      if (n.type === 'hold') {
+        this.record('MISS', 0, n, 'hold'); // tail is lost with the head
+        this.fading.push(n);
       }
-      this.head++;
     }
+    while (this.head < notes.length && notes[this.head].judged) this.head++;
   }
 
   // ---- scoring ----
@@ -684,10 +734,11 @@ export class Game {
         line(ctx, ef.px - 5, ef.py - 5, ef.px + 5, ef.py + 5);
         line(ctx, ef.px - 5, ef.py + 5, ef.px + 5, ef.py - 5);
       } else {
-        ctx.strokeStyle = NOTE_COLOR.slide;
-        ctx.fillStyle = NOTE_COLOR.slide;
+        const c = ef.j === 'PERFECT' ? NOTE_COLOR.slide : COLOR[ef.j];
+        ctx.strokeStyle = c;
+        ctx.fillStyle = c;
         ctx.lineWidth = 2;
-        circle(ctx, ef.px, ef.py, 8 + 16 * ease);
+        circle(ctx, ef.px, ef.py, 8 + 16 * ease * strong);
         ctx.stroke();
         for (const sp of ef.sparks) {
           const dist = sp.speed * ease;
@@ -819,6 +870,15 @@ function sparks(j, type) {
     });
   }
   return out;
+}
+
+// Distance from point p to the segment (x1, y1)-(x2, y2).
+function segDist(p, x1, y1, x2, y2) {
+  const vx = x2 - x1;
+  const vy = y2 - y1;
+  const l2 = vx * vx + vy * vy;
+  const k = l2 ? Math.max(0, Math.min(1, ((p.x - x1) * vx + (p.y - y1) * vy) / l2)) : 0;
+  return Math.hypot(p.x - (x1 + vx * k), p.y - (y1 + vy * k));
 }
 
 function line(ctx, x1, y1, x2, y2) {
