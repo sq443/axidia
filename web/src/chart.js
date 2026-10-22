@@ -1,5 +1,7 @@
 // Chart format:
-//   { bpm, beatMs, duration (ms), notes: [{ type, time (ms), x (0..1), end? (ms, hold only) }] }
+//   { bpm, beatMs, duration (ms), notes: [{ type, side, time (ms), x (0..1), end? (ms, hold only) }] }
+//   side: 'bottom' — falls from the top edge to the bottom judgment line
+//         'top'    — rises from the bottom edge to the top judgment line (vertical mirror)
 //   type: 'tap'  — tap when it reaches the line
 //         'drag' — just have a finger on it when it reaches the line (no tap needed)
 //         'hold' — tap the head, keep a finger on it until `end`
@@ -12,14 +14,16 @@ const BPM = 140;
 const BARS = 32;
 
 export const DIFFICULTIES = {
-  EASY: { seed: 14, patterns: ['half', 'quarter', 'holdSimple', 'dragSweep', 'halfDouble'] },
+  EASY: { seed: 11, patterns: ['half', 'quarter', 'holdSimple', 'dragSweep', 'halfDouble', 'mirrorHalf'] },
   NORMAL: {
-    seed: 7,
-    patterns: ['quarter', 'eighthStair', 'zigzag', 'quarterDouble', 'holdSimple', 'dragWave', 'holdTaps'],
+    seed: 6,
+    patterns: ['quarter', 'eighthStair', 'zigzag', 'quarterDouble', 'holdSimple', 'dragWave', 'holdTaps', 'mirror'],
   },
   HARD: {
-    seed: 16,
-    patterns: ['eighthStair', 'zigzag', 'quarterDouble', 'burst', 'eighthDouble', 'dragZig', 'holdTaps'],
+    seed: 104,
+    patterns: [
+      'eighthStair', 'zigzag', 'quarterDouble', 'burst', 'eighthDouble', 'dragZig', 'holdTaps', 'mirror', 'seesaw',
+    ],
   },
 };
 
@@ -45,9 +49,11 @@ function nextX(rng, from, minDist = 0.2) {
   return from < 0.5 ? clamp(from + minDist) : clamp(from - minDist);
 }
 
+const flip = (side) => (side === 'top' ? 'bottom' : 'top');
 const pair = (rng) => [between(rng, MIN_X, 0.38), between(rng, 0.62, MAX_X)];
 
-// Each pattern fills one bar (4 beats) and returns [[beat, x, type?, lengthInBeats?], ...].
+// Each pattern fills one bar (4 beats) and returns [[beat, x, type?, lengthInBeats?, otherSide?], ...].
+// `otherSide` puts the note on the opposite judgment line from the rest of the bar.
 const PATTERNS = {
   half(rng, s) {
     return [0, 2].map((b) => [b, (s.x = nextX(rng, s.x, 0.25))]);
@@ -112,6 +118,37 @@ const PATTERNS = {
     return out;
   },
 
+  // ---- both lines ----
+  // Same position on both lines at once.
+  mirrorHalf(rng, s) {
+    return [0, 2].flatMap((b) => {
+      const x = (s.x = nextX(rng, s.x, 0.25));
+      return [[b, x], [b, x, 'tap', 0, true]];
+    });
+  },
+  mirror(rng, s) {
+    return [0, 1, 2, 3].flatMap((b) => {
+      const x = (s.x = nextX(rng, s.x));
+      return [[b, x], [b, x, 'tap', 0, true]];
+    });
+  },
+  // 8ths alternating between the lines while drifting sideways.
+  seesaw(rng, s) {
+    let dir = s.x < 0.5 ? 1 : -1;
+    let x = s.x;
+    const out = [];
+    for (let i = 0; i < 8; i++) {
+      x += dir * 0.08;
+      if (x > MAX_X || x < MIN_X) {
+        dir = -dir;
+        x += 2 * dir * 0.08;
+      }
+      out.push([i / 2, clamp(x), 'tap', 0, i % 2 === 1]);
+    }
+    s.x = x;
+    return out;
+  },
+
   // ---- hold ----
   holdSimple(rng, s) {
     const x = (s.x = nextX(rng, s.x, 0.25));
@@ -170,22 +207,26 @@ export function generateChart(difficulty) {
   const state = { x: 0.5, hard: difficulty === 'HARD' };
   const raw = [];
 
-  // Bar 0 is lead-in. Phrases are 2 bars; the second bar mirrors the first.
+  // Bar 0 is lead-in. Phrases are 2 bars; the second bar mirrors the first horizontally,
+  // and sometimes answers on the other judgment line.
   for (let bar = 1; bar < BARS; bar += 2) {
-    const pool = bar < 5 ? def.patterns.slice(0, 1) : def.patterns;
+    const intro = bar < 5;
+    const pool = intro ? def.patterns.slice(0, 1) : def.patterns;
     const name = pool[Math.floor(rng() * pool.length)];
     const phrase = PATTERNS[name](rng, state);
-    for (const [beat, x, type = 'tap', len = 0] of phrase) {
-      raw.push([bar * 4 + beat, x, type, len]);
-      if (bar + 1 < BARS) raw.push([(bar + 1) * 4 + beat, 1 - x, type, len]);
+    const sideA = intro || rng() < 0.5 ? 'bottom' : 'top';
+    const sideB = !intro && rng() < 0.5 ? flip(sideA) : sideA;
+    for (const [beat, x, type = 'tap', len = 0, other = false] of phrase) {
+      raw.push([bar * 4 + beat, x, type, len, other ? flip(sideA) : sideA]);
+      if (bar + 1 < BARS) raw.push([(bar + 1) * 4 + beat, 1 - x, type, len, other ? flip(sideB) : sideB]);
     }
     state.x = 1 - state.x;
   }
-  raw.push([BARS * 4, 0.5, 'tap', 0]); // final note
+  raw.push([BARS * 4, 0.5, 'tap', 0, 'bottom'], [BARS * 4, 0.5, 'tap', 0, 'top']); // final notes
 
   const notes = raw
-    .map(([beat, x, type, len]) => {
-      const n = { type, time: beat * beatMs, x: Math.round(x * 1000) / 1000 };
+    .map(([beat, x, type, len, side]) => {
+      const n = { type, side, time: beat * beatMs, x: Math.round(x * 1000) / 1000 };
       if (type === 'hold') n.end = (beat + len) * beatMs;
       return n;
     })
