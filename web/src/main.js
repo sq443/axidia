@@ -86,6 +86,7 @@ if (new URLSearchParams(location.search).has('debug')) window.__game = game;
 
 function play() {
   sfx.unlock();
+  lockLandscape();
   show(null);
   game.start(generateChart(settings.difficulty), { speed: settings.speed });
 }
@@ -110,12 +111,30 @@ $('resume').addEventListener('click', () => {
   show(null);
   game.resume();
 });
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden && game.running) {
+function pauseIfPlaying() {
+  if (game.running) {
     game.pause();
     show('pause');
   }
-});
+}
+document.addEventListener('visibilitychange', () => document.hidden && pauseIfPlaying());
+
+// ---- orientation ----
+
+// Landscape only. Where the browser allows it (Android Chrome), go fullscreen and lock the
+// orientation; elsewhere (iOS Safari) the CSS overlay asks the player to rotate.
+async function lockLandscape() {
+  try {
+    if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+      await document.documentElement.requestFullscreen({ navigationUI: 'hide' });
+    }
+    await screen.orientation?.lock?.('landscape');
+  } catch {
+    // not supported — the rotate overlay covers it
+  }
+}
+
+matchMedia('(orientation: portrait)').addEventListener('change', (e) => e.matches && pauseIfPlaying());
 
 // ---- result ----
 

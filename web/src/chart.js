@@ -1,17 +1,26 @@
 // Chart format:
-//   { bpm, duration (ms), notes: [{ time (ms), x (0..1, center of note in the field) }] }
-// Free lane: x is continuous, there are no fixed lanes.
+//   { bpm, beatMs, duration (ms), notes: [{ type, time (ms), x (0..1), end? (ms, hold only) }] }
+//   type: 'tap'  — tap when it reaches the line
+//         'drag' — just have a finger on it when it reaches the line (no tap needed)
+//         'hold' — tap the head, keep a finger on it until `end`
+// Free lane: x is the note's center as a fraction of the field width; there are no fixed lanes.
 // For now charts are generated from a fixed seed so every play of a difficulty is identical.
 
-const MIN_X = 0.1;
-const MAX_X = 0.9;
+const MIN_X = 0.08;
+const MAX_X = 0.92;
 const BPM = 140;
 const BARS = 32;
 
 export const DIFFICULTIES = {
-  EASY: { seed: 11, patterns: ['half', 'quarter', 'halfDouble', 'quarter'] },
-  NORMAL: { seed: 23, patterns: ['quarter', 'eighthStair', 'zigzag', 'quarterDouble'] },
-  HARD: { seed: 37, patterns: ['eighthStair', 'zigzag', 'quarterDouble', 'burst', 'eighthDouble'] },
+  EASY: { seed: 14, patterns: ['half', 'quarter', 'holdSimple', 'dragSweep', 'halfDouble'] },
+  NORMAL: {
+    seed: 7,
+    patterns: ['quarter', 'eighthStair', 'zigzag', 'quarterDouble', 'holdSimple', 'dragWave', 'holdTaps'],
+  },
+  HARD: {
+    seed: 16,
+    patterns: ['eighthStair', 'zigzag', 'quarterDouble', 'burst', 'eighthDouble', 'dragZig', 'holdTaps'],
+  },
 };
 
 function mulberry32(seed) {
@@ -38,7 +47,7 @@ function nextX(rng, from, minDist = 0.2) {
 
 const pair = (rng) => [between(rng, MIN_X, 0.38), between(rng, 0.62, MAX_X)];
 
-// Each pattern fills one bar (4 beats) and returns [[beat, x], ...].
+// Each pattern fills one bar (4 beats) and returns [[beat, x, type?, lengthInBeats?], ...].
 const PATTERNS = {
   half(rng, s) {
     return [0, 2].map((b) => [b, (s.x = nextX(rng, s.x, 0.25))]);
@@ -63,10 +72,10 @@ const PATTERNS = {
     let x = s.x;
     const out = [];
     for (let i = 0; i < 8; i++) {
-      x += dir * 0.11;
+      x += dir * 0.1;
       if (x > MAX_X || x < MIN_X) {
         dir = -dir;
-        x += 2 * dir * 0.11;
+        x += 2 * dir * 0.1;
       }
       out.push([i / 2, clamp(x)]);
     }
@@ -85,7 +94,7 @@ const PATTERNS = {
   burst(rng, s) {
     const dir = s.x < 0.5 ? 1 : -1;
     const start = dir > 0 ? between(rng, MIN_X, 0.3) : between(rng, 0.7, MAX_X);
-    const out = [0, 0.25, 0.5, 0.75].map((b, i) => [b, clamp(start + dir * i * 0.11)]);
+    const out = [0, 0.25, 0.5, 0.75].map((b, i) => [b, clamp(start + dir * i * 0.1)]);
     let x = out[3][1];
     for (const b of [1.5, 2, 3, 3.5]) out.push([b, (x = nextX(rng, x))]);
     s.x = x;
@@ -102,13 +111,63 @@ const PATTERNS = {
     s.x = out[out.length - 1][1];
     return out;
   },
+
+  // ---- hold ----
+  holdSimple(rng, s) {
+    const x = (s.x = nextX(rng, s.x, 0.25));
+    return [[0, x, 'hold', 2], [3, (s.x = nextX(rng, x, 0.3))]];
+  },
+  // Hold on one side while tapping on the other.
+  holdTaps(rng, s) {
+    const left = rng() < 0.5;
+    const hx = left ? between(rng, MIN_X, 0.3) : between(rng, 0.7, MAX_X);
+    const out = [[0, hx, 'hold', 3]];
+    const beats = s.hard ? [1, 1.5, 2, 2.5, 3] : [1, 2, 3];
+    for (const b of beats) out.push([b, left ? between(rng, 0.55, MAX_X) : between(rng, MIN_X, 0.45)]);
+    s.x = out[out.length - 1][1];
+    return out;
+  },
+
+  // ---- drag ----
+  // Straight slide across the field on 8ths.
+  dragSweep(rng, s) {
+    const from = s.x < 0.5 ? between(rng, MIN_X, 0.25) : between(rng, 0.75, MAX_X);
+    const to = 1 - from;
+    const out = [];
+    for (let i = 0; i < 7; i++) out.push([i / 2, from + ((to - from) * i) / 6, 'drag']);
+    s.x = to;
+    return out;
+  },
+  // Gentle sine wave on 8ths, ending with a tap.
+  dragWave(rng, s) {
+    const c = between(rng, 0.35, 0.65);
+    const amp = Math.min(c - MIN_X, MAX_X - c, 0.3);
+    const phase = rng() * Math.PI * 2;
+    const out = [];
+    for (let i = 0; i < 7; i++) out.push([i / 2, c + amp * Math.sin(phase + (i * Math.PI) / 3), 'drag']);
+    out.push([3.5, (s.x = nextX(rng, out[6][1], 0.3))]);
+    return out;
+  },
+  // Two quick 16th slides in opposite directions.
+  dragZig(rng, s) {
+    const out = [];
+    let x = s.x < 0.5 ? between(rng, MIN_X, 0.3) : between(rng, 0.7, MAX_X);
+    for (const start of [0, 2]) {
+      const dir = x < 0.5 ? 1 : -1;
+      for (let i = 0; i < 6; i++) out.push([start + i / 4, clamp(x + dir * i * 0.09), 'drag']);
+      x = nextX(rng, clamp(x + dir * 5 * 0.09), 0.3);
+      out.push([start + 1.5, x]); // the next slide starts from this tap
+    }
+    s.x = x;
+    return out;
+  },
 };
 
 export function generateChart(difficulty) {
   const def = DIFFICULTIES[difficulty];
   const rng = mulberry32(def.seed);
   const beatMs = 60000 / BPM;
-  const state = { x: 0.5 };
+  const state = { x: 0.5, hard: difficulty === 'HARD' };
   const raw = [];
 
   // Bar 0 is lead-in. Phrases are 2 bars; the second bar mirrors the first.
@@ -116,23 +175,22 @@ export function generateChart(difficulty) {
     const pool = bar < 5 ? def.patterns.slice(0, 1) : def.patterns;
     const name = pool[Math.floor(rng() * pool.length)];
     const phrase = PATTERNS[name](rng, state);
-    for (const [beat, x] of phrase) {
-      raw.push([bar * 4 + beat, x]);
-      if (bar + 1 < BARS) raw.push([(bar + 1) * 4 + beat, 1 - x]);
+    for (const [beat, x, type = 'tap', len = 0] of phrase) {
+      raw.push([bar * 4 + beat, x, type, len]);
+      if (bar + 1 < BARS) raw.push([(bar + 1) * 4 + beat, 1 - x, type, len]);
     }
     state.x = 1 - state.x;
   }
-  raw.push([BARS * 4, 0.5]); // final note
+  raw.push([BARS * 4, 0.5, 'tap', 0]); // final note
 
   const notes = raw
-    .map(([beat, x]) => ({ time: beat * beatMs, x: Math.round(x * 1000) / 1000 }))
+    .map(([beat, x, type, len]) => {
+      const n = { type, time: beat * beatMs, x: Math.round(x * 1000) / 1000 };
+      if (type === 'hold') n.end = (beat + len) * beatMs;
+      return n;
+    })
     .sort((a, b) => a.time - b.time || a.x - b.x);
 
-  return {
-    difficulty,
-    bpm: BPM,
-    beatMs,
-    notes,
-    duration: notes[notes.length - 1].time + 1200,
-  };
+  const last = notes.reduce((m, n) => Math.max(m, n.end ?? n.time), 0);
+  return { difficulty, bpm: BPM, beatMs, notes, duration: last + 1200 };
 }

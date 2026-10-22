@@ -7,6 +7,10 @@
   --great: #f2f2f2;
   --good: #9a9a9a;
   --miss: #ff5d6c;
+  --drag: #ffd84d;
+  /* read by the canvas layout */
+  --sal: env(safe-area-inset-left, 0px);
+  --sar: env(safe-area-inset-right, 0px);
   color-scheme: dark;
 }
 
@@ -58,7 +62,7 @@ button {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: max(24px, env(safe-area-inset-top)) 24px max(24px, env(safe-area-inset-bottom));
+  padding: 16px max(24px, env(safe-area-inset-right)) 16px max(24px, env(safe-area-inset-left));
   background: var(--bg);
 }
 
@@ -66,18 +70,43 @@ button {
   background: rgba(11, 11, 12, 0.86);
 }
 
+/* landscape: brand / summary on the left, controls on the right */
+.columns {
+  width: 100%;
+  max-width: 760px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: center;
+  gap: 40px;
+}
+
+.brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 8px;
+}
+
 .stack {
   width: 100%;
-  max-width: 320px;
+  max-width: 340px;
+  justify-self: center;
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 12px;
+  gap: 10px;
   text-align: center;
 }
 
+.row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
 .logo {
-  font-size: 44px;
+  font-size: 40px;
   font-weight: 200;
   letter-spacing: 0.42em;
   margin-right: -0.42em;
@@ -85,21 +114,49 @@ button {
 
 .sub {
   color: var(--dim);
-  font-size: 12px;
+  font-size: 11px;
   letter-spacing: 0.3em;
-  margin-bottom: 28px;
+}
+
+.legend {
+  list-style: none;
+  margin-top: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--dim);
+  text-align: left;
+}
+
+.legend i {
+  display: inline-block;
+  width: 26px;
+  height: 6px;
+  margin-right: 10px;
+  border-radius: 3px;
+  vertical-align: middle;
+  background: var(--fg);
+}
+
+.legend .n-hold {
+  box-shadow: 0 -6px 0 -1px rgba(242, 242, 242, 0.3);
+}
+
+.legend .n-drag {
+  height: 4px;
+  background: var(--drag);
 }
 
 .group {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: 6px;
 }
 
 .label {
   color: var(--dim);
-  font-size: 11px;
+  font-size: 10px;
   letter-spacing: 0.24em;
 }
 
@@ -112,9 +169,9 @@ button {
 }
 
 .segmented button {
-  padding: 9px 0;
+  padding: 8px 0;
   border-radius: 999px;
-  font-size: 13px;
+  font-size: 12px;
   letter-spacing: 0.1em;
   color: var(--dim);
 }
@@ -125,34 +182,34 @@ button {
 }
 
 .best {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--dim);
   min-height: 1em;
 }
 
 .stepper {
   display: grid;
-  grid-template-columns: 48px 1fr 48px;
+  grid-template-columns: 40px 1fr 40px;
   align-items: center;
   border: 1px solid var(--line);
   border-radius: 999px;
 }
 
 .stepper button {
-  height: 40px;
-  font-size: 20px;
+  height: 38px;
+  font-size: 18px;
   font-weight: 300;
 }
 
 .stepper output {
-  font-size: 16px;
+  font-size: 15px;
 }
 
 .toggle {
   height: 40px;
   border: 1px solid var(--line);
   border-radius: 999px;
-  font-size: 13px;
+  font-size: 12px;
   letter-spacing: 0.1em;
 }
 
@@ -162,32 +219,32 @@ button {
 
 .primary,
 .ghost {
-  height: 52px;
+  height: 46px;
   border-radius: 999px;
-  font-size: 14px;
+  font-size: 13px;
   letter-spacing: 0.3em;
 }
 
 .primary {
-  margin-top: 12px;
   background: var(--fg);
   color: var(--bg);
+}
+
+.stack > .primary {
+  margin-top: 8px;
 }
 
 .ghost {
   border: 1px solid var(--line);
 }
 
-.hint {
-  margin-top: 8px;
-  color: var(--dim);
-  font-size: 11px;
-  line-height: 1.6;
+#pause .stack {
+  max-width: 280px;
 }
 
 .version {
   position: absolute;
-  bottom: max(10px, env(safe-area-inset-bottom));
+  bottom: max(8px, env(safe-area-inset-bottom));
   left: 0;
   right: 0;
   text-align: center;
@@ -199,8 +256,8 @@ button {
 .icon-btn {
   position: fixed;
   z-index: 2;
-  top: max(10px, env(safe-area-inset-top));
-  left: 10px;
+  top: 8px;
+  left: max(8px, env(safe-area-inset-left));
   width: 44px;
   height: 44px;
   display: flex;
@@ -218,14 +275,14 @@ button {
 }
 
 .rank {
-  font-size: 88px;
+  font-size: 84px;
   font-weight: 200;
   line-height: 1;
-  margin-top: 8px;
+  margin-top: 4px;
 }
 
 .score {
-  font-size: 28px;
+  font-size: 26px;
   font-weight: 300;
   letter-spacing: 0.12em;
 }
@@ -240,12 +297,12 @@ button {
 .stats {
   display: grid;
   grid-template-columns: 1fr auto;
-  gap: 8px 16px;
-  margin: 20px 0 8px;
-  padding: 16px 4px;
+  gap: 6px 16px;
+  margin-bottom: 6px;
+  padding: 12px 4px;
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
-  font-size: 13px;
+  font-size: 12px;
   text-align: left;
 }
 
@@ -262,3 +319,38 @@ button {
 .stats .c-great { color: var(--great); }
 .stats .c-good { color: var(--good); }
 .stats .c-miss { color: var(--miss); }
+
+/* portrait: ask to rotate */
+#rotate {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  background: var(--bg);
+  color: var(--dim);
+  font-size: 13px;
+  letter-spacing: 0.1em;
+}
+
+#rotate .phone {
+  width: 36px;
+  height: 64px;
+  border: 2px solid var(--fg);
+  border-radius: 8px;
+  animation: rotate-hint 2.4s ease-in-out infinite;
+}
+
+@keyframes rotate-hint {
+  0%, 25% { transform: rotate(0deg); }
+  50%, 100% { transform: rotate(-90deg); }
+}
+
+@media (orientation: portrait) {
+  #rotate {
+    display: flex;
+  }
+}

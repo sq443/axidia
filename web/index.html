@@ -21,32 +21,38 @@
   </button>
 
   <section id="title" class="screen">
-    <div class="stack">
-      <h1 class="logo">AXIDIA</h1>
-      <p class="sub">free lane rhythm</p>
-
-      <div class="group">
-        <div class="label">DIFFICULTY</div>
-        <div class="segmented" id="difficulty"></div>
-        <div class="best" id="best"></div>
+    <div class="columns">
+      <div class="brand">
+        <h1 class="logo">AXIDIA</h1>
+        <p class="sub">free lane rhythm</p>
+        <ul class="legend">
+          <li><i class="n-tap"></i>TAP — 線に重なる瞬間にタップ</li>
+          <li><i class="n-hold"></i>HOLD — タップして終わりまで押し続ける</li>
+          <li><i class="n-drag"></i>DRAG — 指を置いておくだけ（なぞる）</li>
+        </ul>
       </div>
-
-      <div class="group">
-        <div class="label">SPEED</div>
-        <div class="stepper">
-          <button data-speed="-1" aria-label="遅く">−</button>
-          <output id="speed">3.0</output>
-          <button data-speed="1" aria-label="速く">+</button>
+      <div class="stack">
+        <div class="group">
+          <div class="label">DIFFICULTY</div>
+          <div class="segmented" id="difficulty"></div>
+          <div class="best" id="best"></div>
         </div>
+        <div class="row">
+          <div class="group">
+            <div class="label">SPEED</div>
+            <div class="stepper">
+              <button data-speed="-1" aria-label="遅く">−</button>
+              <output id="speed">3.0</output>
+              <button data-speed="1" aria-label="速く">+</button>
+            </div>
+          </div>
+          <div class="group">
+            <div class="label">TAP SOUND</div>
+            <button id="sfx" class="toggle">ON</button>
+          </div>
+        </div>
+        <button id="start" class="primary">START</button>
       </div>
-
-      <div class="group">
-        <div class="label">TAP SOUND</div>
-        <button id="sfx" class="toggle">ON</button>
-      </div>
-
-      <button id="start" class="primary">START</button>
-      <p class="hint">落ちてくるノーツが線に重なる瞬間、その位置をタップ</p>
     </div>
     <div class="version">build __VERSION__</div>
   </section>
@@ -61,23 +67,34 @@
   </section>
 
   <section id="result" class="screen" hidden>
-    <div class="stack">
-      <div class="label" id="r-diff"></div>
-      <div class="rank" id="r-rank"></div>
-      <div class="score" id="r-score"></div>
-      <div class="badge" id="r-badge"></div>
-      <dl class="stats">
-        <dt class="c-perfect">PERFECT</dt><dd id="r-perfect"></dd>
-        <dt class="c-great">GREAT</dt><dd id="r-great"></dd>
-        <dt class="c-good">GOOD</dt><dd id="r-good"></dd>
-        <dt class="c-miss">MISS</dt><dd id="r-miss"></dd>
-        <dt>MAX COMBO</dt><dd id="r-combo"></dd>
-        <dt>FAST / SLOW</dt><dd id="r-fastslow"></dd>
-      </dl>
-      <button id="retry" class="primary">RETRY</button>
-      <button id="back" class="ghost">TITLE</button>
+    <div class="columns">
+      <div class="brand">
+        <div class="label" id="r-diff"></div>
+        <div class="rank" id="r-rank"></div>
+        <div class="score" id="r-score"></div>
+        <div class="badge" id="r-badge"></div>
+      </div>
+      <div class="stack">
+        <dl class="stats">
+          <dt class="c-perfect">PERFECT</dt><dd id="r-perfect"></dd>
+          <dt class="c-great">GREAT</dt><dd id="r-great"></dd>
+          <dt class="c-good">GOOD</dt><dd id="r-good"></dd>
+          <dt class="c-miss">MISS</dt><dd id="r-miss"></dd>
+          <dt>MAX COMBO</dt><dd id="r-combo"></dd>
+          <dt>FAST / SLOW</dt><dd id="r-fastslow"></dd>
+        </dl>
+        <div class="row">
+          <button id="back" class="ghost">TITLE</button>
+          <button id="retry" class="primary">RETRY</button>
+        </div>
+      </div>
     </div>
   </section>
+
+  <div id="rotate">
+    <div class="phone"></div>
+    <p>横向きにしてプレイしてください</p>
+  </div>
 
   <script type="module" src="src/main.js"></script>
 </body>
