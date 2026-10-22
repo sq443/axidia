@@ -269,7 +269,9 @@ export class Game {
   //   until the end point stops accepting. The first such finger becomes the slide's finger.
   // - Midpoints (invisible, not judged): the slide's finger must pass them in order; skipping one
   //   is fine (except the first), skipping two in a row stalls the slide (so the end will MISS).
-  //   Passing them in order is what makes the direction count. Lifting the finger stops the slide.
+  //   Passing them in order is what makes the direction count. A finger that slips off the path
+  //   keeps the slide and continues once it's back on it; if the finger is lifted, any finger that
+  //   touches down where the slide left off takes over.
   // - End: the slide's finger near the end point, having passed the midpoints and moved on past the
   //   last one it passed (closer to the end than that midpoint is). ±SLIDE_END.PERFECT →
   //   PERFECT, up to ±SLIDE_END.GREAT → GREAT, otherwise MISS. Arriving early and staying until
@@ -290,6 +292,7 @@ export class Game {
         }
       }
 
+      if (sl.finger === null && start.caught) this.resumeSlide(sl);
       const finger = sl.finger !== null ? this.pointers.get(sl.finger) : null;
       if (finger) this.passMids(sl, finger.px, finger.py, finger.px, finger.py);
 
@@ -312,6 +315,24 @@ export class Game {
 
       // Light up the slide up to the furthest midpoint passed (purely visual).
       if (sl.reached >= 0) sl.done = Math.max(sl.done, sl.mids[sl.reached].u);
+    }
+  }
+
+  // After the slide's finger was lifted: a finger within MID_REACH of the stretch of path where
+  // the slide left off — from the last midpoint passed (or the start) up to two midpoints ahead
+  // (or the end) — becomes the slide's finger.
+  resumeSlide(sl) {
+    const from = sl.reached >= 0 ? sl.mids[sl.reached].u : 0;
+    const to = sl.reached < 0 ? sl.mids[0].u : sl.mids[sl.reached + 2]?.u ?? 1;
+    const steps = 12;
+    for (const [id, p] of this.pointers) {
+      for (let i = 0; i <= steps; i++) {
+        const q = this.slidePos(sl, from + ((to - from) * i) / steps);
+        if (Math.hypot(p.px - q.x, p.py - q.y) <= MID_REACH) {
+          sl.finger = id;
+          return;
+        }
+      }
     }
   }
 
