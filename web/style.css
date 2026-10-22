@@ -3,9 +3,8 @@
   --fg: #f2f2f2;
   --dim: #8a8a8e;
   --line: rgba(255, 255, 255, 0.14);
-  --perfect: #7cf5ff;
-  --great: #f2f2f2;
-  --good: #9a9a9a;
+  --perfect: #ffd84d;
+  --great: #7cf5ff;
   --miss: #ff5d6c;
   --drag: #ffd84d;
   /* read by the canvas layout */
@@ -333,7 +332,6 @@ button {
 
 .stats .c-perfect { color: var(--perfect); }
 .stats .c-great { color: var(--great); }
-.stats .c-good { color: var(--good); }
 .stats .c-miss { color: var(--miss); }
 
 /* portrait: ask to rotate */

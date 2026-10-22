@@ -1,13 +1,12 @@
 import * as sfx from './sfx.js';
 
-// Timing windows (ms, ± from the exact note time).
-export const WINDOW = { PERFECT: 45, GREAT: 90, GOOD: 135 };
-const WEIGHT = { PERFECT: 1, GREAT: 0.7, GOOD: 0.3, MISS: 0 };
+// Timing windows (ms, ± from the exact note time). Outside GREAT is MISS.
+export const WINDOW = { PERFECT: 45, GREAT: 135 };
+const WEIGHT = { PERFECT: 1, GREAT: 0.7, MISS: 0 };
 // Judgments are shown only through hit effects, so each has its own color and strength.
 const COLOR = {
-  PERFECT: '#7cf5ff',
-  GREAT: '#f2f2f2',
-  GOOD: '#8a8a8e',
+  PERFECT: '#ffd84d',
+  GREAT: '#7cf5ff',
   MISS: '#ff5d6c',
 };
 const NOTE_COLOR = { tap: '#f2f2f2', hold: '#f2f2f2', drag: '#ffd84d', flick: '#f2f2f2', slide: '#b9a4ff' };
@@ -21,12 +20,12 @@ const HOLD_SLACK = 0.07; // looser tolerance for keeping a hold
 const RELEASE_GRACE = 150; // ms before a hold's end where letting go still counts
 const FLICK_MOVE = 4; // px a touching finger must move in one event to count as a flick
 const FLICK_REACH = 2.5; // the finger must be within this many flick-diamond sizes of the center
-const SLIDE_REACH = 100; // px from a slide's start / end point that a finger may be
+const SLIDE_REACH = 100; // px from a slide's start / end point that a finger may be (at most)
+const SLIDE_REACH_SHARE = 0.6; // ...and at most this share of the slide's length (keeps short slides' ends apart)
 const SLIDE_LEAD_BEATS = 1; // the slide's guide appears this many beats before it starts
 const SLIDE_END = { PERFECT: 250, GREAT: 400 }; // ms, ± around a slide's end time
 const MID_SPACING = 70; // px between a slide's invisible midpoints (at least 2 per slide)
-const MID_REACH = 40; // px a finger must pass within to clear a midpoint
-const SHOW_ANCHORS = true; // debug: draw the nine slide anchor points
+const MID_REACH = 50; // px a finger must pass within to clear a midpoint
 // Judgment lines, fraction of screen height. Notes for the bottom line fall from the top edge;
 // notes for the top line rise from the bottom edge. Touches in each half of the screen play that half's line.
 const LINE_Y = { top: 0.2, bottom: 0.8 };
@@ -120,7 +119,7 @@ export class Game {
     // Each hold scores twice: its head and its tail.
     this.total = this.notes.reduce((s, n) => s + (n.type === 'hold' ? 2 : 1), 0);
     this.approach = BASE_APPROACH / speed;
-    this.stats = { PERFECT: 0, GREAT: 0, GOOD: 0, MISS: 0, fast: 0, slow: 0 };
+    this.stats = { PERFECT: 0, GREAT: 0, MISS: 0, fast: 0, slow: 0 };
     this.points = 0;
     this.combo = 0;
     this.maxCombo = 0;
@@ -129,7 +128,6 @@ export class Game {
     this.holding = []; // holds whose head was hit and are being held
     this.fading = []; // holds that were missed or released, still drawn while they move away
     this.effects = [];
-    this.taps = [];
     this.pointers.clear();
 
     const first = this.notes.length ? this.notes[0].time : 0;
@@ -206,7 +204,6 @@ export class Game {
     const pnow = performance.now();
     const now = Math.abs(pnow - e.timeStamp) < 500 ? e.timeStamp : pnow;
     const t = now - this.startAt;
-    this.taps.push({ px, side, at: pnow });
     this.catchDrags(t, fx, fx, side);
     this.catchSlides(t);
 
@@ -214,11 +211,11 @@ export class Game {
     let bestCost = Infinity;
     for (let i = this.head; i < this.notes.length; i++) {
       const n = this.notes[i];
-      if (n.time - t > WINDOW.GOOD) break;
+      if (n.time - t > WINDOW.GREAT) break;
       if (n.judged || n.side !== side || (n.type !== 'tap' && n.type !== 'hold')) continue;
       const dt = t - n.time;
       const dx = Math.abs(fx - n.x);
-      if (Math.abs(dt) > WINDOW.GOOD || dx > NOTE_W / 2 + HIT_SLACK) continue;
+      if (Math.abs(dt) > WINDOW.GREAT || dx > NOTE_W / 2 + HIT_SLACK) continue;
       const cost = Math.abs(dt) + dx * 200; // prefer timing, break ties by distance
       if (cost < bestCost) {
         bestCost = cost;
@@ -227,7 +224,7 @@ export class Game {
     }
     if (!best) return;
     const adt = Math.abs(best.dt);
-    const j = adt <= WINDOW.PERFECT ? 'PERFECT' : adt <= WINDOW.GREAT ? 'GREAT' : 'GOOD';
+    const j = adt <= WINDOW.PERFECT ? 'PERFECT' : 'GREAT';
     this.judge(best.n, j, best.dt);
     if (best.n.type === 'hold') this.holding.push(best.n);
   }
@@ -263,7 +260,7 @@ export class Game {
       const n = this.notes[i];
       if (n.time - t > WINDOW.GREAT) break;
       if (n.type !== 'drag' || n.side !== side || n.judged || n.caught) continue;
-      if (t - n.time > WINDOW.GOOD) continue;
+      if (t - n.time > WINDOW.GREAT) continue;
       if (hi >= n.x - reach && lo <= n.x + reach) n.caught = true;
     }
   }
@@ -289,7 +286,7 @@ export class Game {
       if (!start.judged && !start.caught) {
         const a = this.slidePos(sl, 0);
         for (const [id, p] of this.pointers) {
-          if (Math.hypot(p.px - a.x, p.py - a.y) > SLIDE_REACH) continue;
+          if (Math.hypot(p.px - a.x, p.py - a.y) > this.slideReach(sl)) continue;
           start.caught = true;
           sl.finger = id;
           break;
@@ -307,7 +304,7 @@ export class Game {
           const ready =
             finger &&
             sl.reached >= sl.mids.length - 2 && // the last midpoint may be skipped too
-            Math.hypot(finger.px - b.x, finger.py - b.y) <= SLIDE_REACH;
+            Math.hypot(finger.px - b.x, finger.py - b.y) <= this.slideReach(sl);
           if (ready && dt < -SLIDE_END.PERFECT) end.early = true;
           else if (ready && dt <= SLIDE_END.PERFECT) end.caught = true; // PERFECT on time
           else if (dt > SLIDE_END.PERFECT && (ready || end.early)) {
@@ -337,6 +334,11 @@ export class Game {
         }
       }
     }
+  }
+
+  // Start / end reach: SLIDE_REACH, but less on short slides so the two don't overlap.
+  slideReach(sl) {
+    return Math.min(SLIDE_REACH, this.pathGeo(sl).total * SLIDE_REACH_SHARE);
   }
 
   slideActive(sl, t) {
@@ -419,8 +421,8 @@ export class Game {
   catchFlicks(t) {
     for (let i = this.head; i < this.notes.length; i++) {
       const n = this.notes[i];
-      if (n.time - t > WINDOW.GOOD) break;
-      if (n.type === 'flick' && !n.judged && Math.abs(t - n.time) <= WINDOW.GOOD) n.caught = true;
+      if (n.time - t > WINDOW.GREAT) break;
+      if (n.type === 'flick' && !n.judged && Math.abs(t - n.time) <= WINDOW.GREAT) n.caught = true;
     }
   }
 
@@ -456,14 +458,14 @@ export class Game {
 
   // How long after its time a note can still be taken.
   lateLimit(n) {
-    if (n.type !== 'slide') return WINDOW.GOOD;
+    if (n.type !== 'slide') return WINDOW.GREAT;
     return n.u === 0 ? n.slide.end - n.time + SLIDE_END.GREAT : SLIDE_END.GREAT;
   }
 
   sweepMisses(t) {
     const notes = this.notes;
-    // Every limit is at least WINDOW.GOOD, so only notes older than that can be missed.
-    for (let i = this.head; i < notes.length && notes[i].time < t - WINDOW.GOOD; i++) {
+    // Every limit is at least WINDOW.GREAT, so only notes older than that can be missed.
+    for (let i = this.head; i < notes.length && notes[i].time < t - WINDOW.GREAT; i++) {
       const n = notes[i];
       if (n.judged || t - n.time <= this.lateLimit(n)) continue;
       this.judge(n, 'MISS', 0);
@@ -540,22 +542,7 @@ export class Game {
     ctx.fillRect(fieldX, lineY.top - 1, fieldW, 2);
     ctx.fillRect(fieldX, lineY.bottom - 1, fieldW, 2);
 
-    // touch feedback: ripples for taps, a soft column under each finger that's down
     const nw = fieldW * NOTE_W;
-    const column = (px, side, half) => {
-      const y = lineY[side];
-      ctx.fillRect(px - half, side === 'top' ? y : y - 36, half * 2, 36);
-    };
-    this.taps = this.taps.filter((tp) => now - tp.at < 220);
-    for (const tp of this.taps) {
-      const k = (now - tp.at) / 220;
-      ctx.fillStyle = `rgba(255,255,255,${0.12 * (1 - k)})`;
-      column(tp.px, tp.side, nw / 2 + 8 * k);
-    }
-    ctx.fillStyle = 'rgba(255,255,255,0.06)';
-    for (const p of this.pointers.values()) column(fieldX + p.x * fieldW, p.side, nw / 2);
-
-    if (SHOW_ANCHORS) this.drawAnchors();
 
     // slides (from one beat before they start) and flicks sit underneath everything that moves
     for (const sl of this.slides) {
@@ -635,29 +622,6 @@ export class Game {
     ctx.globalAlpha = 1;
   }
 
-  drawAnchors() {
-    const { ctx } = this;
-    ctx.save();
-    ctx.strokeStyle = 'rgba(185,164,255,0.6)';
-    ctx.fillStyle = 'rgba(185,164,255,0.6)';
-    ctx.lineWidth = 1.5;
-    ctx.font = '500 9px system-ui, -apple-system, sans-serif';
-    ctx.textAlign = 'center';
-    for (const [id, { x, y }] of Object.entries(this.anchors)) {
-      ctx.beginPath();
-      ctx.arc(x, y, 6, 0, Math.PI * 2);
-      ctx.stroke();
-      if (id[0] === 'M') {
-        ctx.textBaseline = 'middle';
-        ctx.fillText(id, x + 20, y);
-      } else {
-        ctx.textBaseline = id[0] === 'T' ? 'bottom' : 'top';
-        ctx.fillText(id, x, id[0] === 'T' ? y - 9 : y + 9);
-      }
-    }
-    ctx.restore();
-  }
-
   // The whole slide fades in SLIDE_LEAD_BEATS beats before it starts. At the same moment a demo
   // dot traces the first beat's worth of the slide at the slide's pace (for one beat); then, while
   // the slide is being played, the demo dot runs again over the whole slide.
@@ -677,46 +641,46 @@ export class Game {
 
     // track
     ctx.strokeStyle = 'rgba(185,164,255,0.28)';
-    ctx.lineWidth = 10;
+    ctx.lineWidth = 20;
     polyline(ctx, this.pathPoints(sl));
 
     // direction chevrons, following the path's direction of travel
     ctx.strokeStyle = 'rgba(185,164,255,0.8)';
-    ctx.lineWidth = 2;
-    for (let d = 22; d < total - 10; d += 26) {
+    ctx.lineWidth = 3;
+    for (let d = 36; d < total - 20; d += 44) {
       const { x: cx, y: cy, tx: ux, ty: uy } = this.slidePos(sl, d / total);
       ctx.beginPath();
-      ctx.moveTo(cx - ux * 4 - uy * 5, cy - uy * 4 + ux * 5);
-      ctx.lineTo(cx + ux * 2, cy + uy * 2);
-      ctx.lineTo(cx - ux * 4 + uy * 5, cy - uy * 4 - ux * 5);
+      ctx.moveTo(cx - ux * 8 - uy * 10, cy - uy * 8 + ux * 10);
+      ctx.lineTo(cx + ux * 4, cy + uy * 4);
+      ctx.lineTo(cx - ux * 8 + uy * 10, cy - uy * 8 - ux * 10);
       ctx.stroke();
     }
 
     // relay points
     ctx.fillStyle = 'rgba(185,164,255,0.9)';
     for (const p of pts.slice(1, -1)) {
-      circle(ctx, p.x, p.y, 4);
+      circle(ctx, p.x, p.y, 8);
       ctx.fill();
     }
 
     // traced so far
     if (sl.done > 0) {
       ctx.strokeStyle = NOTE_COLOR.slide;
-      ctx.lineWidth = 10;
+      ctx.lineWidth = 20;
       polyline(ctx, this.pathPoints(sl, sl.done));
     }
 
     // start point, with a ring closing in on the start time; end point
     const k = Math.min(1, Math.max(0, (sl.time - t) / (beat * SLIDE_LEAD_BEATS)));
     ctx.strokeStyle = NOTE_COLOR.slide;
-    ctx.lineWidth = 2;
-    circle(ctx, a.x, a.y, 10 + 22 * k);
+    ctx.lineWidth = 3;
+    circle(ctx, a.x, a.y, 20 + 44 * k);
     ctx.stroke();
     ctx.fillStyle = NOTE_COLOR.slide;
-    circle(ctx, a.x, a.y, 8);
+    circle(ctx, a.x, a.y, 16);
     ctx.fill();
     ctx.fillStyle = '#f2f2f2';
-    circle(ctx, b.x, b.y, 5);
+    circle(ctx, b.x, b.y, 10);
     ctx.fill();
 
     // demo dot: a one-beat preview with the guide, then the whole slide in time with play
@@ -726,9 +690,9 @@ export class Game {
     if (demo >= 0 && demo <= 1) {
       const p = this.slidePos(sl, demo);
       ctx.shadowColor = CHORD_GLOW;
-      ctx.shadowBlur = 14;
+      ctx.shadowBlur = 20;
       ctx.fillStyle = '#ffffff';
-      circle(ctx, p.x, p.y, 6);
+      circle(ctx, p.x, p.y, 12);
       ctx.fill();
     }
     ctx.restore();
@@ -765,15 +729,15 @@ export class Game {
     ctx.globalAlpha = 1;
   }
 
-  // Hit effects carry the judgment: PERFECT is a big cyan burst with a beam and sparks,
-  // GREAT a white burst, GOOD a small gray ring, MISS a red crack on the line.
+  // Hit effects carry the judgment: PERFECT is a big yellow burst with a beam and sparks,
+  // GREAT a smaller cyan burst, MISS a red crack on the line.
   drawEffect(ef, now) {
     const { ctx, fieldX, fieldW } = this;
     const k = (now - ef.at) / EFFECT_MS;
     const ease = 1 - (1 - k) * (1 - k); // fast out, slow settle
     const fade = 1 - k;
-    const color = ef.type === 'drag' && ef.j === 'PERFECT' ? NOTE_COLOR.drag : COLOR[ef.j];
-    const strong = ef.j === 'PERFECT' ? 1 : ef.j === 'GREAT' ? 0.65 : 0.35;
+    const color = COLOR[ef.j];
+    const strong = ef.j === 'PERFECT' ? 1 : 0.65;
 
     let cx;
     let cy;
@@ -796,15 +760,12 @@ export class Game {
       // small burst on the slide checkpoint
       ctx.globalAlpha = fade;
       if (ef.j === 'MISS') {
-        ctx.lineWidth = 2;
-        line(ctx, ef.px - 5, ef.py - 5, ef.px + 5, ef.py + 5);
-        line(ctx, ef.px - 5, ef.py + 5, ef.px + 5, ef.py - 5);
+        ctx.lineWidth = 3;
+        line(ctx, ef.px - 10, ef.py - 10, ef.px + 10, ef.py + 10);
+        line(ctx, ef.px - 10, ef.py + 10, ef.px + 10, ef.py - 10);
       } else {
-        const c = ef.j === 'PERFECT' ? NOTE_COLOR.slide : COLOR[ef.j];
-        ctx.strokeStyle = c;
-        ctx.fillStyle = c;
-        ctx.lineWidth = 2;
-        circle(ctx, ef.px, ef.py, 8 + 16 * ease * strong);
+        ctx.lineWidth = 3;
+        circle(ctx, ef.px, ef.py, 16 + 32 * ease * strong);
         ctx.stroke();
         for (const sp of ef.sparks) {
           const dist = sp.speed * ease;
@@ -846,18 +807,16 @@ export class Game {
       // flash on the line
       ctx.globalAlpha = 0.45 * strong * fade;
       ctx.fillRect(cx - nw / 2, cy - NOTE_H, nw, NOTE_H * 2);
-      // beam toward the middle (PERFECT / GREAT)
-      if (ef.j !== 'GOOD') {
-        const len = 90 * strong * (1 - 0.4 * k);
-        const g = ctx.createLinearGradient(0, cy, 0, cy + inward * len);
-        g.addColorStop(0, color);
-        g.addColorStop(1, 'rgba(0,0,0,0)');
-        ctx.fillStyle = g;
-        ctx.globalAlpha = 0.35 * strong * fade;
-        const bw = nw * (0.9 - 0.4 * k);
-        ctx.fillRect(cx - bw / 2, Math.min(cy, cy + inward * len), bw, len);
-        ctx.fillStyle = color;
-      }
+      // beam toward the middle
+      const len = 90 * strong * (1 - 0.4 * k);
+      const g = ctx.createLinearGradient(0, cy, 0, cy + inward * len);
+      g.addColorStop(0, color);
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g;
+      ctx.globalAlpha = 0.35 * strong * fade;
+      const bw = nw * (0.9 - 0.4 * k);
+      ctx.fillRect(cx - bw / 2, Math.min(cy, cy + inward * len), bw, len);
+      ctx.fillStyle = color;
       // expanding ring
       ctx.globalAlpha = fade;
       ctx.lineWidth = 1 + 2 * strong;
@@ -931,7 +890,7 @@ function sparks(j, type) {
   for (let i = 0; i < count; i++) {
     out.push({
       angle: radial ? (i / count) * Math.PI * 2 + Math.random() * 0.4 : Math.PI * (0.1 + 0.8 * Math.random()),
-      speed: ({ flick: 70, slide: 18 }[type] ?? 34) + Math.random() * 30,
+      speed: ({ flick: 70, slide: 36 }[type] ?? 34) + Math.random() * 30,
       size: 2 + Math.random() * 2,
     });
   }
@@ -940,16 +899,17 @@ function sparks(j, type) {
 
 // One segment of a slide path from a to b: straight, or an arc of radius r bulging to the left
 // ('L') or right ('R') of the direction of travel. Of the two circles of radius r through a and b,
-// the one whose center is on the other side gives that bulge; two anchors a diameter apart give a
-// semicircle. `at(k)` gives the point and direction of travel at fraction k of the segment.
+// the one whose center is on the other side gives that bulge. Arcs only join diagonal neighbors
+// (a 90° arc) or anchors two steps apart (a semicircle); anything else is drawn straight.
+// `at(k)` gives the point and direction of travel at fraction k of the segment.
 function makeSeg(a, b, bend, r) {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
   const c = Math.hypot(dx, dy);
   const tx = dx / c;
   const ty = dy / c;
-  if (!bend || c > 2 * r + 0.5) {
-    // straight (also the fallback when the anchors are too far apart for an arc)
+  if (!bend || c < 1.3 * r || c > 2 * r + 0.5) {
+    // straight (also the fallback for neighbors, or anchors too far apart for an arc)
     return { len: c, arc: false, at: (k) => ({ x: a.x + dx * k, y: a.y + dy * k, tx, ty }) };
   }
   const side = bend === 'R' ? 1 : -1;

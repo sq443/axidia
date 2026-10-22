@@ -11,7 +11,8 @@
 //         'slide' — trace `path` (anchor ids, 2 or more) between `time` and `end`; anchors in
 //                   between are relay points. `bends` (optional, one per segment) makes a segment
 //                   an arc of radius TL–ML: 'L' / 'R' bulges to the left / right of the direction
-//                   of travel, null is straight. An arc can span at most two grid steps (a semicircle).
+//                   of travel, null is straight. Arcs join diagonal neighbors (90°) or anchors two
+//                   steps apart in a row / column (a semicircle).
 //   Slide anchors: a 3×3 grid, T/M/B (top judgment line / middle / bottom judgment line) × L/C/R.
 //   L and R are as far apart as the two lines are, so TL-TR-BR-BL forms a square around MC.
 // Free lane: x is the note's center as a fraction of the field width; there are no fixed lanes.
@@ -24,7 +25,7 @@ const BARS = 32;
 
 export const DIFFICULTIES = {
   EASY: {
-    seed: 426,
+    seed: 569,
     flick: 0.3,
     slideLen: 1.5,
     slideRelays: 1,
@@ -42,7 +43,7 @@ export const DIFFICULTIES = {
     ],
   },
   HARD: {
-    seed: 1419,
+    seed: 3208,
     flick: 0.5,
     slideLen: 1,
     slideRelays: 3,
@@ -261,15 +262,15 @@ const flipBend = (b) => (b === 'L' ? 'R' : b === 'R' ? 'L' : null); // mirroring
 // Grid position of an anchor: column L/C/R → x 0..2, row T/M/B → y 0..2 (y down).
 const gridPos = (a) => ({ x: 'LCR'.indexOf(a[1]), y: 'TMB'.indexOf(a[0]) });
 
-// Whether an arc (radius one grid step) from a to b bulging to `bend` can exist and keeps its
-// bulge on the grid (a little overshoot is fine).
+// Whether an arc (radius one grid step) from a to b bulging to `bend` is allowed — diagonal
+// neighbors (90°) or two steps apart (semicircle) — and keeps its bulge on the grid.
 function arcFits(a, b, bend) {
   const p = gridPos(a);
   const q = gridPos(b);
   const dx = q.x - p.x;
   const dy = q.y - p.y;
   const c = Math.hypot(dx, dy);
-  if (c > 2) return false;
+  if (c < 1.3 || c > 2) return false;
   const side = bend === 'R' ? 1 : -1;
   const sag = 1 - Math.sqrt(Math.max(0, 1 - (c * c) / 4)); // how far the arc's middle sticks out
   const mx = (p.x + q.x) / 2 + (-dy / c) * side * sag;
@@ -310,8 +311,6 @@ const SLIDE_TESTS = [
   ['ML>TC>MR>BC>ML', 3],
   ['TL>TR>BR>BL>TL', 3],
   ['ML>TL>TC>MC>BC>BR>MR', 3],
-  ['TL)TC', 0.5],
-  ['TC(TL', 0.5],
   ['TL)MC', 1],
   ['TL(MC', 1],
   ['TL)TR', 1.5],
@@ -319,7 +318,7 @@ const SLIDE_TESTS = [
   ['TC)BC', 1.5],
   ['TC(BC', 1.5],
   ['ML)MR)ML', 3],
-  ['TC)MC(BC', 2],
+  ['TC)ML(BC', 2],
   ['ML(TC(MR(BC(ML', 3],
   ['TL>TC)MR>BR', 2],
   ['BL(MC)TR', 2],

@@ -155,7 +155,6 @@ function showResult(r) {
   $('r-badge').textContent = r.allPerfect ? 'ALL PERFECT' : r.fullCombo ? 'FULL COMBO' : '';
   $('r-perfect').textContent = r.stats.PERFECT;
   $('r-great').textContent = r.stats.GREAT;
-  $('r-good').textContent = r.stats.GOOD;
   $('r-miss').textContent = r.stats.MISS;
   $('r-combo').textContent = `${r.maxCombo} / ${r.total}`;
   $('r-fastslow').textContent = `${r.stats.fast} / ${r.stats.slow}`;
