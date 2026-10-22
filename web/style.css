@@ -257,6 +257,13 @@ button {
   touch-action: none;
 }
 
+.editor-link {
+  color: var(--dim);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-align: center;
+}
+
 .hint {
   color: var(--dim);
   font-size: 11px;

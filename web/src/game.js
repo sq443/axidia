@@ -89,7 +89,9 @@ export class Game {
 
   // offset: ms the game clock runs behind the audio (device latency compensation).
   // sync: optional () => performance time at which song time 0 is heard; the game clock follows it.
-  start(chart, { speed, offset = 0, sync = null }) {
+  // from: song time (ms) to start playing at (the chart editor's test play); notes before it are
+  // expected to be removed from the chart already.
+  start(chart, { speed, offset = 0, sync = null, from = 0 }) {
     this.chart = chart;
     this.offset = offset;
     this.sync = sync;
@@ -134,8 +136,8 @@ export class Game {
     this.pointers.clear();
 
     const first = this.notes.length ? this.notes[0].time : 0;
-    const lead = Math.max(1200, this.approach - first + 600);
-    this.startAt = performance.now() + lead + offset; // songTime = now - startAt
+    const lead = Math.max(1200, this.approach - (first - from) + 600);
+    this.startAt = performance.now() + lead + offset - from; // songTime = now - startAt, from `from - lead`
     this.paused = false;
     this.resumeAt = 0;
     if (!this.running) {
@@ -910,7 +912,7 @@ function sparks(j, type) {
 // the one whose center is on the other side gives that bulge. Arcs only join diagonal neighbors
 // (a 90° arc) or anchors two steps apart (a semicircle); anything else is drawn straight.
 // `at(k)` gives the point and direction of travel at fraction k of the segment.
-function makeSeg(a, b, bend, r) {
+export function makeSeg(a, b, bend, r) {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
   const c = Math.hypot(dx, dy);

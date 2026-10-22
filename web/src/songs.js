@@ -64,8 +64,8 @@ function decode(data) {
   return new Promise((resolve, reject) => ctx.decodeAudioData(data, resolve, reject));
 }
 
-// Chart JSON → the chart object the game plays (times in ms).
-function normalizeChart(json) {
+// Chart JSON → the chart object the game plays (times in ms). Also used by the chart editor.
+export function normalizeChart(json) {
   const beatMs = 60000 / json.bpm;
   const at = (ms, beat) => ms ?? (json.offset ?? 0) + beat * beatMs;
   const notes = json.notes
