@@ -24,6 +24,13 @@ jobs:
       - uses: actions/checkout@v4
       - name: Stamp build version
         run: sed -i "s|__VERSION__|${GITHUB_SHA::7} · ${GITHUB_REF_NAME}|" web/index.html
+      # Pages lets browsers cache files for 10 minutes, so after a deploy a reload can pair the new
+      # HTML with old cached scripts. Versioning every script / stylesheet URL keeps them in step.
+      - name: Version asset URLs
+        run: |
+          V=${GITHUB_SHA::7}
+          sed -i -E "s#(from '\./[A-Za-z0-9_./-]+\.js)'#\1?v=$V'#g" web/src/*.js
+          sed -i -E "s#(src=\"src/[A-Za-z0-9_-]+\.js)\"#\1?v=$V\"#g; s#(href=\"[A-Za-z0-9_-]+\.css)\"#\1?v=$V\"#g" web/*.html
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
