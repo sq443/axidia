@@ -24,7 +24,7 @@ const FLICK_REACH = 2.5; // the finger must be within this many flick-diamond si
 const SLIDE_REACH = 100; // px from a slide's start / end point that a finger may be
 const SLIDE_ALIGN = 0.5; // cos of the max angle between the finger's travel and the slide (60°)
 const SLIDE_MOTION_MS = 150; // how long a finger's last motion direction stays valid
-const SLIDE_LEAD_BEATS = 2; // the slide's guide appears this many beats before it starts
+const SLIDE_LEAD_BEATS = 1; // the slide's guide appears this many beats before it starts
 const SHOW_ANCHORS = true; // debug: draw the six slide anchor points
 // Judgment lines, fraction of screen height. Notes for the bottom line fall from the top edge;
 // notes for the top line rise from the bottom edge. Touches in each half of the screen play that half's line.
@@ -547,7 +547,8 @@ export class Game {
   }
 
   // The whole slide fades in SLIDE_LEAD_BEATS beats before it starts. At the same moment a demo
-  // dot starts tracing the first beat's worth of the slide at the slide's pace (for one beat).
+  // dot traces the first beat's worth of the slide at the slide's pace (for one beat); then, while
+  // the slide is being played, the demo dot runs again over the whole slide.
   drawSlide(sl, t) {
     const { ctx } = this;
     const beat = this.chart.beatMs;
@@ -602,9 +603,11 @@ export class Game {
     circle(ctx, b.x, b.y, 5);
     ctx.fill();
 
-    // demo dot: starts with the guide, runs for one beat (or until it reaches the end point)
-    const demo = (t - appear) / (sl.end - sl.time);
-    if (t >= appear && t < appear + beat && demo <= 1) {
+    // demo dot: a one-beat preview with the guide, then the whole slide in time with play
+    let demo = -1;
+    if (t >= appear && t < appear + beat) demo = (t - appear) / (sl.end - sl.time);
+    else if (t >= sl.time && t <= sl.end) demo = (t - sl.time) / (sl.end - sl.time);
+    if (demo >= 0 && demo <= 1) {
       const p = this.slidePos(sl, demo);
       ctx.shadowColor = CHORD_GLOW;
       ctx.shadowBlur = 14;

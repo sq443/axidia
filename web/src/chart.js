@@ -220,12 +220,12 @@ const PATTERNS = {
   },
 
   // ---- slide ----
-  // One straight slide starting on beat 2; its guide appears two beats earlier, on beat 0.
+  // One straight slide starting on beat 1; its guide appears one beat earlier, on beat 0.
   slide(rng, s) {
     const from = ANCHORS[Math.floor(rng() * ANCHORS.length)];
     const rest = ANCHORS.filter((a) => a !== from);
     const to = rest[Math.floor(rng() * rest.length)];
-    return [[2, 0.5, 'slide', s.slideLen, false, from, to]];
+    return [[1, 0.5, 'slide', s.slideLen, false, from, to]];
   },
 };
 
@@ -235,8 +235,8 @@ const mirrorH = (a) => a[0] + MIRROR_H[a[1]];
 const flipV = (a) => (a[0] === 'T' ? 'B' : 'T') + a[1];
 
 // Every directed anchor pair once — horizontal, then vertical, then diagonal — cycling through
-// lengths so each shape shows up at different speeds. Each slide's guide appears as the previous
-// slide ends.
+// lengths so each shape shows up at different speeds. Slides are two beats apart, so each guide
+// appears one beat after the previous slide ends.
 function slideTestChart(difficulty) {
   const beatMs = 60000 / BPM;
   const LENGTHS = [1, 2, 0.5, 1.5, 3]; // beats
