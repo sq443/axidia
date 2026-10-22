@@ -20,25 +20,47 @@
     <span></span><span></span>
   </button>
 
-  <section id="title" class="screen">
+  <section id="title" class="screen title">
+    <div class="title-center">
+      <h1 class="logo">AXIDIA</h1>
+      <p class="sub">free lane rhythm</p>
+      <p class="tap-to-start">TAP TO START</p>
+    </div>
+    <div class="version">build __VERSION__</div>
+  </section>
+
+  <section id="select" class="screen select" hidden>
+    <header class="select-bar">
+      <button id="to-title" class="bar-btn" aria-label="タイトルへ">AXIDIA</button>
+      <div class="label">SELECT SONG</div>
+      <button id="open-settings" class="bar-btn">SETTINGS</button>
+    </header>
+    <div class="select-body">
+      <ul class="song-list" id="song-list"></ul>
+      <div class="song-detail">
+        <div class="label" id="sd-meta"></div>
+        <h2 class="song-title" id="sd-title"></h2>
+        <div class="song-artist" id="sd-artist"></div>
+        <div class="segmented" id="difficulty"></div>
+        <div class="diff-info"><span id="sd-notes"></span><span id="best"></span></div>
+        <button id="start" class="primary">START</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="settings" class="screen" hidden>
     <div class="columns">
       <div class="brand">
-        <h1 class="logo">AXIDIA</h1>
-        <p class="sub">free lane rhythm</p>
+        <div class="label">HOW TO PLAY</div>
         <ul class="legend">
           <li><i class="n-tap"></i>TAP — 線に重なる瞬間にタップ（上半分は上の線、下半分は下の線）</li>
           <li><i class="n-hold"></i>HOLD — タップして終わりまで押し続ける</li>
           <li><i class="n-drag"></i>DRAG — 指を置いておくだけ（なぞる）</li>
           <li><i class="n-flick"></i>FLICK — ひし形が重なる瞬間、ひし形の近くで指を動かす</li>
-          <li><i class="n-slide"></i>SLIDE — 始点から終点へ、矢印の向きに線をなぞる（直線・円弧、中継点で折れ曲がる）</li>
+          <li><i class="n-slide"></i>SLIDE — 始点から終点へ、矢印の向きに線をなぞる</li>
         </ul>
       </div>
       <div class="stack">
-        <div class="group">
-          <div class="label">DIFFICULTY</div>
-          <div class="segmented" id="difficulty"></div>
-          <div class="best" id="best"></div>
-        </div>
         <div class="row">
           <div class="group">
             <div class="label">SPEED</div>
@@ -67,18 +89,8 @@
             <button id="calibrate" class="toggle">測定する</button>
           </div>
         </div>
-        <button id="start" class="primary">START</button>
+        <button id="close-settings" class="primary">CLOSE</button>
       </div>
-    </div>
-    <div class="version">build __VERSION__</div>
-  </section>
-
-  <section id="pause" class="screen dim" hidden>
-    <div class="stack">
-      <div class="label">PAUSED</div>
-      <button id="resume" class="primary">RESUME</button>
-      <button id="retry-p" class="ghost">RETRY</button>
-      <button id="quit" class="ghost">TITLE</button>
     </div>
   </section>
 
@@ -95,9 +107,19 @@
     </div>
   </section>
 
+  <section id="pause" class="screen dim" hidden>
+    <div class="stack">
+      <div class="label">PAUSED</div>
+      <button id="resume" class="primary">RESUME</button>
+      <button id="retry-p" class="ghost">RETRY</button>
+      <button id="quit" class="ghost">SELECT</button>
+    </div>
+  </section>
+
   <section id="result" class="screen" hidden>
     <div class="columns">
       <div class="brand">
+        <div class="label" id="r-song"></div>
         <div class="label" id="r-diff"></div>
         <div class="rank" id="r-rank"></div>
         <div class="score" id="r-score"></div>
@@ -112,12 +134,15 @@
           <dt>FAST / SLOW</dt><dd id="r-fastslow"></dd>
         </dl>
         <div class="row">
-          <button id="back" class="ghost">TITLE</button>
+          <button id="back" class="ghost">SELECT</button>
           <button id="retry" class="primary">RETRY</button>
         </div>
       </div>
     </div>
   </section>
+
+  <!-- diamond outline that follows the screen transition -->
+  <div id="iris" aria-hidden="true"></div>
 
   <div id="rotate">
     <div class="phone"></div>

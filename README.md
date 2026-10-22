@@ -39,6 +39,53 @@
 ノーツの左右（ノーツ幅 + 少しの余裕）以内なら当たり判定になります。
 スコアは 1,000,000 点満点（PERFECT 100% / GREAT 70%）。
 
+## 画面の流れ
+
+タイトル（TAP TO START）→ 選曲（左に曲のリスト、右に曲情報・難易度 EASY / NORMAL / HARD・ノーツ数・ベスト・START。右上 SETTINGS で SPEED / TAP SOUND / OFFSET / 遊び方）→ プレイ → リザルト → 選曲。
+
+選曲画面は START でひし形に縮んで消え、その下ですでにプレイが始まっています。リザルトやポーズから戻るときは、ひし形が中央から広がって選曲画面が現れます。
+
+## 曲の追加
+
+曲は `web/src/songs.js` の `SONGS` に並べます。テスト楽曲は譜面も曲もコードで生成していますが、実際の曲はファイルから読み込めます。
+
+```js
+{
+  id: 'my-song',
+  title: '曲名',
+  artist: 'アーティスト',
+  bpm: 128,
+  audio: 'songs/my-song/audio.mp3',            // web/ からの相対パス
+  charts: {
+    EASY: 'songs/my-song/easy.json',
+    NORMAL: 'songs/my-song/normal.json',
+    HARD: 'songs/my-song/hard.json',
+  },
+}
+```
+
+譜面 JSON:
+
+```json
+{
+  "bpm": 128,
+  "offset": 0,
+  "notes": [
+    { "type": "tap", "side": "bottom", "beat": 4, "x": 0.5 },
+    { "type": "hold", "side": "top", "beat": 6, "endBeat": 8, "x": 0.2 },
+    { "type": "drag", "side": "bottom", "beat": 9, "x": 0.8 },
+    { "type": "flick", "beat": 10 },
+    { "type": "slide", "beat": 12, "endBeat": 14, "path": ["TL", "MC", "BR"], "bends": [null, "L"] }
+  ]
+}
+```
+
+- 時刻は `beat`（`offset` ms を 0 拍目とした拍数）か `time`（音源の先頭からの ms）で書けます。ホールド・スライドの終点は `endBeat` か `end`
+- `side` は `top` / `bottom`（フリックとスライドは不要）、`x` は 0〜1 の横位置
+- 音源の 0ms が譜面の 0ms です
+
+`?debug` を付けて開くと、選曲画面にスライド確認用の曲（全スライド形状）が出ます。
+
 ## 音楽とオフセット
 
 - 曲は `web/src/music.js` で合成しています（1小節目はカウントのクリック、その後はキック＋クリック・スネア・ハイハット・ベース・コードの Am–F–C–G ループ、最後の拍でクラッシュ）。違う部分（カウント・4小節ループ・エンディング）だけを OfflineAudioContext でレンダリングして並べるので、生成は一瞬です
@@ -81,7 +128,8 @@ iOS Safari の「共有 → ホーム画面に追加」で、アドレスバー�
 web/
   index.html          画面（タイトル / ポーズ / リザルト）
   style.css
-  src/main.js         画面遷移・設定の保存
+  src/main.js         画面遷移（タイトル・選曲・設定・リザルト）・設定の保存
+  src/songs.js        曲リストと、譜面・音源の読み込み
   src/game.js         ゲームループ・判定・描画（Canvas）
   src/chart.js        譜面フォーマットと譜面生成
   src/sfx.js          AudioContext とタップ音
@@ -90,9 +138,9 @@ web/
 scripts/serve.mjs     スマホ確認用の静的サーバー
 ```
 
-### 確認用難易度 SLIDE
+### スライド確認（?debug）
 
-難易度 `SLIDE` はスライドだけの確認用譜面です。直線・中段経由・V字・Z字・ループ・ひし形・蛇行と、円弧（90°・半円・円・S字・直線との組み合わせ）の計31種類の形を、いろいろな長さで1本ずつ流します。`chart.js` の `SLIDE_TESTS` で編集でき、`>` が直線、`)` が進行方向の右に膨らむ円弧、`(` が左に膨らむ円弧です（例: `ML)MR)ML` で円）。スライド同士は2拍空けてあり、各スライドのガイドは前のスライドが終わった1拍後に出ます。
+`?debug` で選曲画面に出る「スライド確認」はスライドだけの確認用譜面です。直線・中段経由・V字・Z字・ループ・ひし形・蛇行と、円弧（90°・半円・円・S字・直線との組み合わせ）の計31種類の形を、いろいろな長さで1本ずつ流します。`chart.js` の `SLIDE_TESTS` で編集でき、`>` が直線、`)` が進行方向の右に膨らむ円弧、`(` が左に膨らむ円弧です（例: `ML)MR)ML` で円）。スライド同士は2拍空けてあり、各スライドのガイドは前のスライドが終わった1拍後に出ます。
 
 ### 譜面フォーマット
 
