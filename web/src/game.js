@@ -23,6 +23,7 @@ const FLICK_REACH = 2.5; // the finger must be within this many flick-diamond si
 const SLIDE_REACH = 100; // px from a slide's start / end point that a finger may be (at most)
 const SLIDE_REACH_SHARE = 0.6; // ...and at most this share of the slide's length (keeps short slides' ends apart)
 export const SLIDE_LEAD_BEATS = 2; // the slide's guide appears this many beats before it starts
+const SLIDE_DEMO_BEATS = 2; // the demo dot shown with the guide traces this many beats of the slide
 const SLIDE_END = { PERFECT: 250, GREAT: 400 }; // ms, ± around a slide's end time
 const MID_SPACING = 70; // px between a slide's invisible midpoints (at least 2 per slide)
 const MID_REACH = 50; // px a finger must pass within to clear a midpoint
@@ -655,8 +656,9 @@ export class Game {
   }
 
   // The whole slide fades in SLIDE_LEAD_BEATS beats before it starts. At the same moment a demo
-  // dot traces the first beat's worth of the slide at the slide's pace (for one beat); then, while
-  // the slide is being played, the demo dot runs again over the whole slide.
+  // dot traces the first SLIDE_DEMO_BEATS beats' worth of the slide at the slide's pace (a shorter
+  // slide is traced whole, then the dot disappears); then, while the slide is being played, the
+  // demo dot runs again over the whole slide.
   drawSlide(sl, t) {
     const { ctx } = this;
     const beat = this.chart.beatMs;
@@ -715,9 +717,9 @@ export class Game {
     circle(ctx, b.x, b.y, 10);
     ctx.fill();
 
-    // demo dot: a one-beat preview with the guide, then the whole slide in time with play
+    // demo dot: a preview of the first beats with the guide, then the whole slide in time with play
     let demo = -1;
-    if (t >= appear && t < appear + beat) demo = (t - appear) / (sl.end - sl.time);
+    if (t >= appear && t < appear + beat * SLIDE_DEMO_BEATS) demo = (t - appear) / (sl.end - sl.time);
     else if (t >= sl.time && t <= sl.end) demo = (t - sl.time) / (sl.end - sl.time);
     if (demo >= 0 && demo <= 1) {
       const p = this.slidePos(sl, demo);
