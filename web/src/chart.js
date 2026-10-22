@@ -8,8 +8,10 @@
 //         'drag'  — just have a finger on it when it reaches the line (no tap needed)
 //         'hold'  — tap the head, keep a finger on it until `end`
 //         'flick' — move a touching finger in any direction when the diamond guide closes in
-//         'slide' — trace `path` (anchor ids, 2 or more) between `time` and `end`; straight lines
-//                   between consecutive anchors, any anchors in between are relay points
+//         'slide' — trace `path` (anchor ids, 2 or more) between `time` and `end`; anchors in
+//                   between are relay points. `bends` (optional, one per segment) makes a segment
+//                   an arc of radius TL–ML: 'L' / 'R' bulges to the left / right of the direction
+//                   of travel, null is straight. An arc can span at most two grid steps (a semicircle).
 //   Slide anchors: a 3×3 grid, T/M/B (top judgment line / middle / bottom judgment line) × L/C/R.
 //   L and R are as far apart as the two lines are, so TL-TR-BR-BL forms a square around MC.
 // Free lane: x is the note's center as a fraction of the field width; there are no fixed lanes.
@@ -22,26 +24,29 @@ const BARS = 32;
 
 export const DIFFICULTIES = {
   EASY: {
-    seed: 250,
+    seed: 426,
     flick: 0.3,
     slideLen: 1.5,
     slideRelays: 1,
+    slideArcs: 0.3,
     patterns: ['half', 'quarter', 'holdSimple', 'dragSweep', 'halfDouble', 'mirrorHalf', 'slide'],
   },
   NORMAL: {
-    seed: 154,
+    seed: 116,
     flick: 0.4,
     slideLen: 1.5,
     slideRelays: 2,
+    slideArcs: 0.4,
     patterns: [
       'quarter', 'eighthStair', 'zigzag', 'quarterDouble', 'holdSimple', 'dragWave', 'holdTaps', 'mirror', 'slide',
     ],
   },
   HARD: {
-    seed: 484,
+    seed: 1419,
     flick: 0.5,
     slideLen: 1,
     slideRelays: 3,
+    slideArcs: 0.5,
     patterns: [
       'eighthStair', 'zigzag', 'quarterDouble', 'burst', 'eighthDouble', 'dragZig', 'holdTaps', 'mirror', 'seesaw',
       'slide',
@@ -76,7 +81,8 @@ function nextX(rng, from, minDist = 0.2) {
 const flip = (side) => (side === 'top' ? 'bottom' : 'top');
 const pair = (rng) => [between(rng, MIN_X, 0.38), between(rng, 0.62, MAX_X)];
 
-// Each pattern fills one bar (4 beats) and returns [[beat, x, type?, lengthInBeats?, otherSide?, path?], ...].
+// Each pattern fills one bar (4 beats) and returns
+// [[beat, x, type?, lengthInBeats?, otherSide?, path?, bends?], ...].
 // `otherSide` puts the note on the opposite judgment line from the rest of the bar.
 const PATTERNS = {
   half(rng, s) {
@@ -225,7 +231,8 @@ const PATTERNS = {
 
   // ---- slide ----
   // One slide starting on beat 1 (its guide appears one beat earlier, on beat 0), with up to
-  // `slideRelays` relay points. Each extra segment adds half a beat, ending by beat 3.5.
+  // `slideRelays` relay points; each segment becomes an arc with probability `slideArcs` when it
+  // can (and stays on the grid). Each extra segment adds half a beat, ending by beat 3.5.
   slide(rng, s) {
     const pick = (list) => list[Math.floor(rng() * list.length)];
     const path = [pick(ANCHORS)];
@@ -234,8 +241,13 @@ const PATTERNS = {
       // never stay put or turn straight back
       path.push(pick(ANCHORS.filter((a) => a !== path[path.length - 1] && a !== path[path.length - 2])));
     }
+    const bends = path.slice(1).map((b, i) => {
+      if (rng() >= s.slideArcs) return null;
+      const options = ['L', 'R'].filter((bend) => arcFits(path[i], b, bend));
+      return options.length ? pick(options) : null;
+    });
     const len = Math.min(2.5, s.slideLen + 0.5 * relays);
-    return [[1, 0.5, 'slide', len, false, path]];
+    return [[1, 0.5, 'slide', len, false, path, bends]];
   },
 };
 
@@ -244,9 +256,38 @@ const MIRROR_H = { L: 'R', C: 'C', R: 'L' };
 const FLIP_V = { T: 'B', M: 'M', B: 'T' };
 const mirrorH = (a) => a[0] + MIRROR_H[a[1]];
 const flipV = (a) => FLIP_V[a[0]] + a[1];
+const flipBend = (b) => (b === 'L' ? 'R' : b === 'R' ? 'L' : null); // mirroring swaps the bulge side
 
-// Hand-picked shapes — straight, through the middle row, V / Λ, Z, loops, the diamond — at
-// different lengths. Slides are two beats apart, so each guide appears one beat after the
+// Grid position of an anchor: column L/C/R → x 0..2, row T/M/B → y 0..2 (y down).
+const gridPos = (a) => ({ x: 'LCR'.indexOf(a[1]), y: 'TMB'.indexOf(a[0]) });
+
+// Whether an arc (radius one grid step) from a to b bulging to `bend` can exist and keeps its
+// bulge on the grid (a little overshoot is fine).
+function arcFits(a, b, bend) {
+  const p = gridPos(a);
+  const q = gridPos(b);
+  const dx = q.x - p.x;
+  const dy = q.y - p.y;
+  const c = Math.hypot(dx, dy);
+  if (c > 2) return false;
+  const side = bend === 'R' ? 1 : -1;
+  const sag = 1 - Math.sqrt(Math.max(0, 1 - (c * c) / 4)); // how far the arc's middle sticks out
+  const mx = (p.x + q.x) / 2 + (-dy / c) * side * sag;
+  const my = (p.y + q.y) / 2 + (dx / c) * side * sag;
+  return mx >= -0.2 && mx <= 2.2 && my >= -0.2 && my <= 2.2;
+}
+
+// 'TL>TC)MR(BR' → path TL, TC, MR, BR with bends null, 'R', 'L': '>' straight, ')' arc bulging
+// right of the direction of travel, '(' arc bulging left.
+function parseSlide(shape) {
+  const parts = shape.split(/([>()])/);
+  const path = parts.filter((_, i) => i % 2 === 0);
+  const bends = parts.filter((_, i) => i % 2 === 1).map((c) => ({ '>': null, ')': 'R', '(': 'L' })[c]);
+  return { path, bends };
+}
+
+// Hand-picked shapes — straight, through the middle row, V / Λ, Z, loops, the diamond, then arcs
+// (notation as in parseSlide) — at different lengths. Slides are two beats apart, so each guide appears one beat after the
 // previous slide ends.
 const SLIDE_TESTS = [
   ['TL>TR', 1],
@@ -269,6 +310,19 @@ const SLIDE_TESTS = [
   ['ML>TC>MR>BC>ML', 3],
   ['TL>TR>BR>BL>TL', 3],
   ['ML>TL>TC>MC>BC>BR>MR', 3],
+  ['TL)TC', 0.5],
+  ['TC(TL', 0.5],
+  ['TL)MC', 1],
+  ['TL(MC', 1],
+  ['TL)TR', 1.5],
+  ['BR)BL', 1.5],
+  ['TC)BC', 1.5],
+  ['TC(BC', 1.5],
+  ['ML)MR)ML', 3],
+  ['TC)MC(BC', 2],
+  ['ML(TC(MR(BC(ML', 3],
+  ['TL>TC)MR>BR', 2],
+  ['BL(MC)TR', 2],
 ];
 
 function slideTestChart(difficulty) {
@@ -276,8 +330,8 @@ function slideTestChart(difficulty) {
   const notes = [];
   let beat = 4;
   for (const [shape, len] of SLIDE_TESTS) {
-    const path = shape.split('>');
-    notes.push({ type: 'slide', side: 'free', time: beat * beatMs, end: (beat + len) * beatMs, x: 0.5, path });
+    const { path, bends } = parseSlide(shape);
+    notes.push({ type: 'slide', side: 'free', time: beat * beatMs, end: (beat + len) * beatMs, x: 0.5, path, bends });
     beat += len + 2;
   }
   const last = notes[notes.length - 1].end;
@@ -289,7 +343,13 @@ export function generateChart(difficulty) {
   if (def.test === 'slides') return slideTestChart(difficulty);
   const rng = mulberry32(def.seed);
   const beatMs = 60000 / BPM;
-  const state = { x: 0.5, hard: difficulty === 'HARD', slideLen: def.slideLen, slideRelays: def.slideRelays };
+  const state = {
+    x: 0.5,
+    hard: difficulty === 'HARD',
+    slideLen: def.slideLen,
+    slideRelays: def.slideRelays,
+    slideArcs: def.slideArcs,
+  };
   let raw = [];
 
   // Bar 0 is lead-in. Phrases are 2 bars; the second bar mirrors the first horizontally,
@@ -301,12 +361,17 @@ export function generateChart(difficulty) {
     const phrase = PATTERNS[name](rng, state);
     const sideA = intro || rng() < 0.5 ? 'bottom' : 'top';
     const sideB = !intro && rng() < 0.5 ? flip(sideA) : sideA;
-    for (const [beat, x, type = 'tap', len = 0, other = false, path] of phrase) {
+    for (const [beat, x, type = 'tap', len = 0, other = false, path, bends] of phrase) {
       if (type === 'slide') {
-        // Slides mirror like everything else: horizontally in the answer bar, vertically on the top side.
+        // Slides mirror like everything else: horizontally in the answer bar, vertically on the
+        // top side. Each mirror swaps the side arcs bulge to.
         const v = (side) => (a) => (side === 'top' ? flipV(a) : a);
-        raw.push([bar * 4 + beat, x, type, len, 'free', path.map(v(sideA))]);
-        if (bar + 1 < BARS) raw.push([(bar + 1) * 4 + beat, x, type, len, 'free', path.map(mirrorH).map(v(sideB))]);
+        const vb = (side) => (b) => (side === 'top' ? flipBend(b) : b);
+        raw.push([bar * 4 + beat, x, type, len, 'free', path.map(v(sideA)), bends.map(vb(sideA))]);
+        if (bar + 1 < BARS) {
+          const answer = [path.map(mirrorH).map(v(sideB)), bends.map(flipBend).map(vb(sideB))];
+          raw.push([(bar + 1) * 4 + beat, x, type, len, 'free', ...answer]);
+        }
         continue;
       }
       raw.push([bar * 4 + beat, x, type, len, other ? flip(sideA) : sideA]);
@@ -325,10 +390,10 @@ export function generateChart(difficulty) {
   raw.push([BARS * 4, 0.5, 'flick', 0, 'center']); // finale
 
   const notes = raw
-    .map(([beat, x, type, len, side, path]) => {
+    .map(([beat, x, type, len, side, path, bends]) => {
       const n = { type, side, time: beat * beatMs, x: Math.round(x * 1000) / 1000 };
       if (type === 'hold' || type === 'slide') n.end = (beat + len) * beatMs;
-      if (type === 'slide') n.path = path;
+      if (type === 'slide') Object.assign(n, { path, bends });
       return n;
     })
     .sort((a, b) => a.time - b.time || a.x - b.x);

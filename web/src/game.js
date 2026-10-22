@@ -41,7 +41,7 @@ export class Game {
     this.onEnd = onEnd;
     this.running = false;
     this.paused = false;
-    // pointerId -> { x (field fraction), side, px, py }
+    // pointerId -> { x (field fraction), side, px, py, mx, my (last movement) }
     this.pointers = new Map();
     this.frame = this.frame.bind(this);
 
@@ -79,6 +79,8 @@ export class Game {
     const gap = this.lineY.bottom - this.lineY.top;
     const cx = this.fieldX + this.fieldW / 2;
     const midY = (this.lineY.top + this.lineY.bottom) / 2;
+    this.gridStep = gap / 2; // TL–ML; also the radius of arc segments
+    this.layoutVer = (this.layoutVer || 0) + 1; // invalidates cached slide geometry
     this.anchors = {};
     for (const [row, y] of [['T', this.lineY.top], ['M', midY], ['B', this.lineY.bottom]]) {
       for (const [col, x] of [['L', cx - gap / 2], ['C', cx], ['R', cx + gap / 2]]) this.anchors[row + col] = { x, y };
@@ -88,7 +90,8 @@ export class Game {
 
   start(chart, { speed }) {
     this.chart = chart;
-    // A slide is a polyline through anchors (`path`). It is judged at two points, its start and its
+    // A slide runs through anchors (`path`), each segment straight or an arc (`bends`). It is judged
+    // at two points, its start and its
     // end; the pace in between is free, but the finger has to pass its invisible midpoints in order.
     // The slide itself is kept for drawing.
     this.slides = [];
@@ -197,7 +200,7 @@ export class Game {
   onDown(e) {
     e.preventDefault();
     const { px, py, fx, side } = this.fieldPos(e);
-    this.pointers.set(e.pointerId, { x: fx, side, px, py });
+    this.pointers.set(e.pointerId, { x: fx, side, px, py, mx: 0, my: 0 });
     if (!this.running || this.paused) return;
     // event.timeStamp shares performance.now()'s clock in modern browsers and is closer to the real touch.
     const pnow = performance.now();
@@ -235,13 +238,14 @@ export class Game {
     const { px, py, fx, side } = this.fieldPos(e);
     const pnow = performance.now();
     const dist = Math.hypot(px - prev.px, py - prev.py);
-    this.pointers.set(e.pointerId, { x: fx, side, px, py });
+    const moved = dist >= 1 ? { mx: px - prev.px, my: py - prev.py } : { mx: prev.mx, my: prev.my };
+    this.pointers.set(e.pointerId, { x: fx, side, px, py, ...moved });
     if (!this.running || this.paused) return;
     const t = pnow - this.startAt;
     // Check the whole swept segment so fast slides don't skip over drag notes between frames.
     if (side === prev.side) this.catchDrags(t, Math.min(prev.x, fx), Math.max(prev.x, fx), side);
     for (const sl of this.slides) {
-      if (this.slideActive(sl, t) && sl.finger === e.pointerId) this.passMids(sl, prev.px, prev.py, px, py);
+      if (this.slideActive(sl, t) && sl.finger === e.pointerId) this.passMids(sl, prev.px, prev.py, px, py, moved);
     }
     this.catchSlides(t);
     // A finger moving in any direction near the center diamond flicks.
@@ -269,13 +273,13 @@ export class Game {
   //   until the end point stops accepting. The first such finger becomes the slide's finger.
   // - Midpoints (invisible, not judged): the slide's finger must pass them in order; skipping one
   //   is fine (except the first), skipping two in a row stalls the slide (so the end will MISS).
-  //   Passing them in order is what makes the direction count. A finger that slips off the path
+  //   A midpoint only counts while the finger moves along the path's direction there; that and
+  //   the order are what make the direction count. A finger that slips off the path
   //   keeps the slide and continues once it's back on it; if the finger is lifted, any finger that
   //   touches down where the slide left off takes over.
-  // - End: the slide's finger near the end point, having passed the midpoints and moved on past the
-  //   last one it passed (closer to the end than that midpoint is). ±SLIDE_END.PERFECT →
-  //   PERFECT, up to ±SLIDE_END.GREAT → GREAT, otherwise MISS. Arriving early and staying until
-  //   the PERFECT window opens is PERFECT.
+  // - End: the slide's finger near the end point, having passed the midpoints. ±SLIDE_END.PERFECT →
+  //   PERFECT, up to ±SLIDE_END.GREAT → GREAT, otherwise MISS — whichever window the finger was
+  //   ready in at any moment (so arriving early and staying, or briefly leaving, is still PERFECT).
   catchSlides(t) {
     for (const sl of this.slides) {
       if (!this.slideActive(sl, t)) continue;
@@ -294,22 +298,21 @@ export class Game {
 
       if (sl.finger === null && start.caught) this.resumeSlide(sl);
       const finger = sl.finger !== null ? this.pointers.get(sl.finger) : null;
-      if (finger) this.passMids(sl, finger.px, finger.py, finger.px, finger.py);
+      if (finger) this.passMids(sl, finger.px, finger.py, finger.px, finger.py, finger);
 
       if (!end.judged && !end.caught) {
         const dt = t - end.time;
         if (dt >= -SLIDE_END.GREAT) {
           const b = this.slidePos(sl, 1);
-          const toEnd = finger && Math.hypot(finger.px - b.x, finger.py - b.y);
-          const last = sl.reached >= 0 && this.slidePos(sl, sl.mids[sl.reached].u);
           const ready =
             finger &&
             sl.reached >= sl.mids.length - 2 && // the last midpoint may be skipped too
-            toEnd <= SLIDE_REACH &&
-            toEnd < Math.hypot(last.x - b.x, last.y - b.y);
+            Math.hypot(finger.px - b.x, finger.py - b.y) <= SLIDE_REACH;
           if (ready && dt < -SLIDE_END.PERFECT) end.early = true;
           else if (ready && dt <= SLIDE_END.PERFECT) end.caught = true; // PERFECT on time
-          else if (ready || end.early) this.judge(end, 'GREAT', dt); // late, or left while early
+          else if (dt > SLIDE_END.PERFECT && (ready || end.early)) {
+            this.judge(end, 'GREAT', ready ? dt : -SLIDE_END.GREAT); // late, or only ever early
+          }
         }
       }
 
@@ -341,9 +344,10 @@ export class Game {
   }
 
   // Midpoints every ~MID_SPACING px along each segment, including each relay corner (so corners
-  // can't be cut). A single straight slide gets at least two.
+  // can't be cut). A single-segment slide gets at least two.
   makeMids(sl) {
-    const { lens, total } = this.pathLens(sl);
+    const { segs, total } = this.pathGeo(sl);
+    const lens = segs.map((g) => g.len);
     const mids = [];
     let acc = 0;
     lens.forEach((len, i) => {
@@ -357,14 +361,17 @@ export class Game {
     return mids;
   }
 
-  // Advance through the midpoints the segment (x1, y1)-(x2, y2) passes, in order, allowing a
-  // single skip (but not of the first one).
-  passMids(sl, x1, y1, x2, y2) {
+  // Advance through the midpoints the finger's segment (x1, y1)-(x2, y2) passes, in order, allowing
+  // a single skip (but not of the first one). The finger's movement { mx, my } must not go against
+  // the path's direction at the midpoint (a finger that hasn't moved yet is fine).
+  passMids(sl, x1, y1, x2, y2, { mx, my }) {
     for (let progressed = true; progressed; ) {
       progressed = false;
       for (const i of sl.reached < 0 ? [0] : [sl.reached + 1, sl.reached + 2]) {
         const m = sl.mids[i];
-        if (m && segDist(this.slidePos(sl, m.u), x1, y1, x2, y2) <= MID_REACH) {
+        if (!m) continue;
+        const q = this.slidePos(sl, m.u);
+        if (segDist(q, x1, y1, x2, y2) <= MID_REACH && mx * q.tx + my * q.ty >= 0) {
           m.passed = true;
           sl.reached = i;
           progressed = true;
@@ -374,24 +381,39 @@ export class Game {
     }
   }
 
-  pathLens(sl) {
+  // A slide's segments: straight lines, or — where `bends[i]` is 'L' / 'R' — arcs of radius
+  // gridStep bulging to the left / right of the direction of travel. Cached per layout.
+  pathGeo(sl) {
+    if (sl.geo?.ver === this.layoutVer) return sl.geo;
     const pts = sl.path.map((id) => this.anchors[id]);
-    const lens = pts.slice(1).map((b, i) => Math.hypot(b.x - pts[i].x, b.y - pts[i].y));
-    return { pts, lens, total: lens.reduce((a, b) => a + b, 0) };
+    const segs = pts.slice(1).map((b, i) => makeSeg(pts[i], b, sl.bends?.[i], this.gridStep));
+    sl.geo = { ver: this.layoutVer, pts, segs, total: segs.reduce((sum, g) => sum + g.len, 0) };
+    return sl.geo;
   }
 
-  // Point at fraction u (0..1) of the path's length.
+  // Point { x, y } and direction of travel { tx, ty } at fraction u (0..1) of the path's length.
   slidePos(sl, u) {
-    const { pts, lens, total } = this.pathLens(sl);
+    const { segs, total } = this.pathGeo(sl);
     let d = Math.max(0, Math.min(1, u)) * total;
-    for (let i = 0; i < lens.length; i++) {
-      if (d <= lens[i] || i === lens.length - 1) {
-        const k = lens[i] ? Math.min(1, d / lens[i]) : 0;
-        return { x: pts[i].x + (pts[i + 1].x - pts[i].x) * k, y: pts[i].y + (pts[i + 1].y - pts[i].y) * k };
-      }
-      d -= lens[i];
+    for (let i = 0; i < segs.length; i++) {
+      if (d <= segs[i].len || i === segs.length - 1) return segs[i].at(segs[i].len ? Math.min(1, d / segs[i].len) : 0);
+      d -= segs[i].len;
     }
-    return pts[0];
+  }
+
+  // Points along the path from the start up to fraction u, fine enough to draw arcs smoothly.
+  pathPoints(sl, u = 1) {
+    const { segs, total } = this.pathGeo(sl);
+    let left = Math.max(0, Math.min(1, u)) * total;
+    const out = [segs[0].at(0)];
+    for (const g of segs) {
+      if (left <= 0) break;
+      const upto = Math.min(1, left / g.len);
+      const steps = g.arc ? Math.max(2, Math.ceil((g.len * upto) / 6)) : 1;
+      for (let j = 1; j <= steps; j++) out.push(g.at((upto * j) / steps));
+      left -= g.len;
+    }
+    return out;
   }
 
   catchFlicks(t) {
@@ -642,7 +664,7 @@ export class Game {
   drawSlide(sl, t) {
     const { ctx } = this;
     const beat = this.chart.beatMs;
-    const { pts, lens } = this.pathLens(sl);
+    const { pts, total } = this.pathGeo(sl);
     const a = pts[0];
     const b = pts[pts.length - 1];
     const appear = sl.time - beat * SLIDE_LEAD_BEATS;
@@ -656,24 +678,19 @@ export class Game {
     // track
     ctx.strokeStyle = 'rgba(185,164,255,0.28)';
     ctx.lineWidth = 10;
-    polyline(ctx, pts);
+    polyline(ctx, this.pathPoints(sl));
 
-    // direction chevrons, per segment
+    // direction chevrons, following the path's direction of travel
     ctx.strokeStyle = 'rgba(185,164,255,0.8)';
     ctx.lineWidth = 2;
-    lens.forEach((len, i) => {
-      const ux = (pts[i + 1].x - pts[i].x) / len;
-      const uy = (pts[i + 1].y - pts[i].y) / len;
-      for (let d = 22; d < len - 10; d += 26) {
-        const cx = pts[i].x + ux * d;
-        const cy = pts[i].y + uy * d;
-        ctx.beginPath();
-        ctx.moveTo(cx - ux * 4 - uy * 5, cy - uy * 4 + ux * 5);
-        ctx.lineTo(cx + ux * 2, cy + uy * 2);
-        ctx.lineTo(cx - ux * 4 + uy * 5, cy - uy * 4 - ux * 5);
-        ctx.stroke();
-      }
-    });
+    for (let d = 22; d < total - 10; d += 26) {
+      const { x: cx, y: cy, tx: ux, ty: uy } = this.slidePos(sl, d / total);
+      ctx.beginPath();
+      ctx.moveTo(cx - ux * 4 - uy * 5, cy - uy * 4 + ux * 5);
+      ctx.lineTo(cx + ux * 2, cy + uy * 2);
+      ctx.lineTo(cx - ux * 4 + uy * 5, cy - uy * 4 - ux * 5);
+      ctx.stroke();
+    }
 
     // relay points
     ctx.fillStyle = 'rgba(185,164,255,0.9)';
@@ -686,7 +703,7 @@ export class Game {
     if (sl.done > 0) {
       ctx.strokeStyle = NOTE_COLOR.slide;
       ctx.lineWidth = 10;
-      polyline(ctx, this.pathUpTo(sl, sl.done));
+      polyline(ctx, this.pathPoints(sl, sl.done));
     }
 
     // start point, with a ring closing in on the start time; end point
@@ -715,18 +732,6 @@ export class Game {
       ctx.fill();
     }
     ctx.restore();
-  }
-
-  // The path's points from the start up to fraction u.
-  pathUpTo(sl, u) {
-    const { pts, lens, total } = this.pathLens(sl);
-    const out = [pts[0]];
-    let d = u * total;
-    for (let i = 0; i < lens.length && d > 0; i++) {
-      out.push(d >= lens[i] ? pts[i + 1] : this.slidePos(sl, u));
-      d -= lens[i];
-    }
-    return out;
   }
 
   drawHold(n, t, { held = false, alpha = 1, now = 0 }) {
@@ -931,6 +936,42 @@ function sparks(j, type) {
     });
   }
   return out;
+}
+
+// One segment of a slide path from a to b: straight, or an arc of radius r bulging to the left
+// ('L') or right ('R') of the direction of travel. Of the two circles of radius r through a and b,
+// the one whose center is on the other side gives that bulge; two anchors a diameter apart give a
+// semicircle. `at(k)` gives the point and direction of travel at fraction k of the segment.
+function makeSeg(a, b, bend, r) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const c = Math.hypot(dx, dy);
+  const tx = dx / c;
+  const ty = dy / c;
+  if (!bend || c > 2 * r + 0.5) {
+    // straight (also the fallback when the anchors are too far apart for an arc)
+    return { len: c, arc: false, at: (k) => ({ x: a.x + dx * k, y: a.y + dy * k, tx, ty }) };
+  }
+  const side = bend === 'R' ? 1 : -1;
+  const nx = -ty * side; // unit normal toward the bulge (right of travel is (-ty, tx), y down)
+  const ny = tx * side;
+  const h = Math.sqrt(Math.max(0, r * r - (c * c) / 4));
+  const cx = (a.x + b.x) / 2 - nx * h;
+  const cy = (a.y + b.y) / 2 - ny * h;
+  const a0 = Math.atan2(a.y - cy, a.x - cx);
+  let sweep = Math.atan2(b.y - cy, b.x - cx) - a0;
+  sweep = ((((sweep + Math.PI) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)) - Math.PI;
+  // go the way whose middle lies on the bulge side (this is what decides semicircles)
+  if (Math.cos(a0 + sweep / 2) * nx + Math.sin(a0 + sweep / 2) * ny < 0) sweep -= Math.sign(sweep || 1) * 2 * Math.PI;
+  const dir = Math.sign(sweep);
+  return {
+    len: r * Math.abs(sweep),
+    arc: true,
+    at: (k) => {
+      const ang = a0 + sweep * k;
+      return { x: cx + r * Math.cos(ang), y: cy + r * Math.sin(ang), tx: -Math.sin(ang) * dir, ty: Math.cos(ang) * dir };
+    },
+  };
 }
 
 // Distance from point p to the segment (x1, y1)-(x2, y2).
