@@ -10,7 +10,7 @@ const COLOR = {
   GOOD: '#8a8a8e',
   MISS: '#ff5d6c',
 };
-const NOTE_COLOR = { tap: '#f2f2f2', hold: '#f2f2f2', drag: '#ffd84d', flick: '#f2f2f2' };
+const NOTE_COLOR = { tap: '#f2f2f2', hold: '#f2f2f2', drag: '#ffd84d', flick: '#f2f2f2', slide: '#b9a4ff' };
 const CHORD_GLOW = 'rgba(170,236,255,0.95)'; // pale cyan halo on simultaneous notes
 
 const NOTE_W = 0.11; // note width, fraction of field width
@@ -20,6 +20,11 @@ const HIT_SLACK = 0.04; // extra horizontal tolerance on each side, fraction of 
 const HOLD_SLACK = 0.07; // looser tolerance for keeping a hold
 const RELEASE_GRACE = 150; // ms before a hold's end where letting go still counts
 const FLICK_MOVE = 4; // px a touching finger must move in one event to count as a flick
+const FLICK_REACH = 2.5; // the finger must be within this many flick-diamond sizes of the center
+const SLIDE_REACH = 44; // px from a slide checkpoint that a finger may be
+const SLIDE_ALIGN = 0.5; // cos of the max angle between the finger's motion and the slide (60°)
+const SLIDE_MOTION_MS = 150; // how long a finger's last motion direction stays valid
+const SHOW_ANCHORS = true; // debug: draw the six slide anchor points
 // Judgment lines, fraction of screen height. Notes for the bottom line fall from the top edge;
 // notes for the top line rise from the bottom edge. Touches in each half of the screen play that half's line.
 const LINE_Y = { top: 0.2, bottom: 0.8 };
@@ -34,7 +39,8 @@ export class Game {
     this.onEnd = onEnd;
     this.running = false;
     this.paused = false;
-    this.pointers = new Map(); // pointerId -> { x (field fraction), side, px, py }
+    // pointerId -> { x (field fraction), side, px, py, dx, dy (last motion direction), movedAt }
+    this.pointers = new Map();
     this.frame = this.frame.bind(this);
 
     this.resize();
@@ -66,15 +72,42 @@ export class Game {
     this.fieldX = (w - this.fieldW) / 2;
     this.lineY = { top: Math.round(h * LINE_Y.top), bottom: Math.round(h * LINE_Y.bottom) };
     this.flickSize = Math.min(28, h * 0.07); // half-diagonal of the flick diamond
+    // Slide anchors: L/R are as far apart as the two lines, so the four corners form a square.
+    const gap = this.lineY.bottom - this.lineY.top;
+    const cx = this.fieldX + this.fieldW / 2;
+    this.anchors = {};
+    for (const [row, y] of [['T', this.lineY.top], ['B', this.lineY.bottom]]) {
+      for (const [col, x] of [['L', cx - gap / 2], ['C', cx], ['R', cx + gap / 2]]) this.anchors[row + col] = { x, y };
+    }
     if (this.running) this.draw(this.songTime(performance.now()), performance.now());
   }
 
   start(chart, { speed }) {
     this.chart = chart;
-    this.notes = chart.notes.map((n) => ({ ...n, judged: null }));
+    // A slide is judged as a chain of checkpoints every half beat (each like a drag),
+    // while the slide itself is kept for drawing.
+    this.slides = [];
+    const notes = [];
+    for (const n of chart.notes) {
+      if (n.type !== 'slide') {
+        notes.push({ ...n, judged: null });
+        continue;
+      }
+      const slide = { ...n, done: 0 }; // done: furthest point (0..1) traced so far
+      this.slides.push(slide);
+      const steps = Math.max(1, Math.round((n.end - n.time) / (chart.beatMs / 2)));
+      for (let i = 0; i <= steps; i++) {
+        const u = i / steps;
+        notes.push({ type: 'slide', side: 'free', slide, u, time: n.time + (n.end - n.time) * u, judged: null });
+      }
+    }
+    this.notes = notes.sort((a, b) => a.time - b.time);
     // Notes sharing a time are chords: they glow so they read as "hit together".
-    for (let i = 1; i < this.notes.length; i++) {
-      if (this.notes[i].time === this.notes[i - 1].time) this.notes[i].chord = this.notes[i - 1].chord = true;
+    const chordable = (n) => n.type !== 'slide';
+    for (let i = 0; i < notes.length; i++) {
+      for (let j = i + 1; j < notes.length && notes[j].time === notes[i].time; j++) {
+        if (chordable(notes[i]) && chordable(notes[j])) notes[i].chord = notes[j].chord = true;
+      }
     }
     // Each hold scores twice: its head and its tail.
     this.total = this.notes.reduce((s, n) => s + (n.type === 'hold' ? 2 : 1), 0);
@@ -131,6 +164,7 @@ export class Game {
     const t = this.songTime(now);
     if (!this.paused) {
       for (const p of this.pointers.values()) this.catchDrags(t, p.x, p.x, p.side);
+      this.catchSlides(t);
       this.resolveCaught(t);
       this.updateHolds(t);
       this.sweepMisses(t);
@@ -158,7 +192,7 @@ export class Game {
   onDown(e) {
     e.preventDefault();
     const { px, py, fx, side } = this.fieldPos(e);
-    this.pointers.set(e.pointerId, { x: fx, side, px, py });
+    this.pointers.set(e.pointerId, { x: fx, side, px, py, dx: 0, dy: 0, movedAt: -Infinity });
     if (!this.running || this.paused) return;
     // event.timeStamp shares performance.now()'s clock in modern browsers and is closer to the real touch.
     const pnow = performance.now();
@@ -166,6 +200,7 @@ export class Game {
     const t = now - this.startAt;
     this.taps.push({ px, side, at: pnow });
     this.catchDrags(t, fx, fx, side);
+    this.catchSlides(t);
 
     let best = null;
     let bestCost = Infinity;
@@ -193,13 +228,22 @@ export class Game {
     const prev = this.pointers.get(e.pointerId);
     if (!prev) return;
     const { px, py, fx, side } = this.fieldPos(e);
-    this.pointers.set(e.pointerId, { x: fx, side, px, py });
+    const pnow = performance.now();
+    const dist = Math.hypot(px - prev.px, py - prev.py);
+    const p = { ...prev, x: fx, side, px, py };
+    if (dist >= 1) Object.assign(p, { dx: (px - prev.px) / dist, dy: (py - prev.py) / dist, movedAt: pnow });
+    this.pointers.set(e.pointerId, p);
     if (!this.running || this.paused) return;
-    const t = performance.now() - this.startAt;
+    const t = pnow - this.startAt;
     // Check the whole swept segment so fast slides don't skip over drag notes between frames.
     if (side === prev.side) this.catchDrags(t, Math.min(prev.x, fx), Math.max(prev.x, fx), side);
-    // Any touching finger moving in any direction flicks.
-    if (Math.hypot(px - prev.px, py - prev.py) >= FLICK_MOVE) this.catchFlicks(t);
+    this.catchSlides(t);
+    // A finger moving in any direction near the center diamond flicks.
+    if (dist >= FLICK_MOVE && (this.nearFlick(px, py) || this.nearFlick(prev.px, prev.py))) this.catchFlicks(t);
+  }
+
+  nearFlick(px, py) {
+    return Math.abs(px - this.w / 2) + Math.abs(py - this.h / 2) <= this.flickSize * FLICK_REACH;
   }
 
   // Mark drag notes near the line that a finger is touching (anywhere in [lo, hi] on that side).
@@ -214,6 +258,37 @@ export class Game {
     }
   }
 
+  // A slide checkpoint is caught by a finger near it that is moving roughly from `from` toward `to`.
+  // The first checkpoint only needs a finger there, so players can rest on the start point.
+  catchSlides(t) {
+    const now = performance.now();
+    for (let i = this.head; i < this.notes.length; i++) {
+      const n = this.notes[i];
+      if (n.time - t > WINDOW.GREAT) break;
+      if (n.type !== 'slide' || n.judged || n.caught || t - n.time > WINDOW.GOOD) continue;
+      const pos = this.slidePos(n.slide, n.u);
+      const a = this.anchors[n.slide.from];
+      const b = this.anchors[n.slide.to];
+      const len = Math.hypot(b.x - a.x, b.y - a.y);
+      const ux = (b.x - a.x) / len;
+      const uy = (b.y - a.y) / len;
+      for (const p of this.pointers.values()) {
+        if (Math.hypot(p.px - pos.x, p.py - pos.y) > SLIDE_REACH) continue;
+        const aligned = now - p.movedAt < SLIDE_MOTION_MS && p.dx * ux + p.dy * uy >= SLIDE_ALIGN;
+        if (n.u === 0 || aligned) {
+          n.caught = true;
+          break;
+        }
+      }
+    }
+  }
+
+  slidePos(slide, u) {
+    const a = this.anchors[slide.from];
+    const b = this.anchors[slide.to];
+    return { x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u };
+  }
+
   catchFlicks(t) {
     for (let i = this.head; i < this.notes.length; i++) {
       const n = this.notes[i];
@@ -222,7 +297,7 @@ export class Game {
     }
   }
 
-  // Caught drags and flicks score PERFECT exactly when they reach their timing.
+  // Caught drags, flicks and slide checkpoints score PERFECT exactly when they reach their timing.
   resolveCaught(t) {
     for (let i = this.head; i < this.notes.length; i++) {
       const n = this.notes[i];
@@ -272,6 +347,7 @@ export class Game {
 
   judge(n, j, dt) {
     n.judged = j;
+    if (n.type === 'slide' && j !== 'MISS') n.slide.done = Math.max(n.slide.done, n.u);
     this.record(j, dt, n, n.type);
   }
 
@@ -286,9 +362,10 @@ export class Game {
       this.comboAt = at;
       this.maxCombo = Math.max(this.maxCombo, this.combo);
       if (j !== 'PERFECT') this.stats[dt < 0 ? 'fast' : 'slow']++;
-      sfx.tap((type === 'tap' || type === 'flick') && j === 'PERFECT' ? 1 : 0.6);
+      sfx.tap((type === 'tap' || type === 'flick') && j === 'PERFECT' ? 1 : type === 'slide' ? 0.35 : 0.6);
     }
-    this.effects.push({ x: n.x, side: n.side, j, type, at, sparks: sparks(j, type) });
+    const pos = type === 'slide' ? this.slidePos(n.slide, n.u) : null;
+    this.effects.push({ x: n.x, side: n.side, px: pos?.x, py: pos?.y, j, type, at, sparks: sparks(j, type) });
   }
 
   score() {
@@ -346,7 +423,12 @@ export class Game {
     ctx.fillStyle = 'rgba(255,255,255,0.06)';
     for (const p of this.pointers.values()) column(fieldX + p.x * fieldW, p.side, nw / 2);
 
-    // flicks sit underneath everything that moves
+    if (SHOW_ANCHORS) this.drawAnchors();
+
+    // slides (from one beat before they start) and flicks sit underneath everything that moves
+    for (const sl of this.slides) {
+      if (t >= sl.time - this.chart.beatMs && t <= sl.end + 250) this.drawSlide(sl, t);
+    }
     for (let i = this.head; i < this.notes.length; i++) {
       const n = this.notes[i];
       if (n.time - t > this.approach) break;
@@ -367,7 +449,7 @@ export class Game {
     for (let i = this.head; i < this.notes.length; i++) {
       const n = this.notes[i];
       if (n.time - t > this.approach) break;
-      if (n.judged || n.type === 'flick') continue;
+      if (n.judged || n.type === 'flick' || n.type === 'slide') continue;
       if (n.type === 'hold') {
         this.drawHold(n, t, {});
         continue;
@@ -419,6 +501,92 @@ export class Game {
     diamond(ctx, cx, cy, s * 0.36);
     ctx.fill();
     ctx.globalAlpha = 1;
+  }
+
+  drawAnchors() {
+    const { ctx } = this;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(185,164,255,0.6)';
+    ctx.fillStyle = 'rgba(185,164,255,0.6)';
+    ctx.lineWidth = 1.5;
+    ctx.font = '500 9px system-ui, -apple-system, sans-serif';
+    ctx.textAlign = 'center';
+    for (const [id, { x, y }] of Object.entries(this.anchors)) {
+      ctx.beginPath();
+      ctx.arc(x, y, 6, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.textBaseline = id[0] === 'T' ? 'bottom' : 'top';
+      ctx.fillText(id, x, id[0] === 'T' ? y - 9 : y + 9);
+    }
+    ctx.restore();
+  }
+
+  // The whole slide fades in one beat before it starts. During that beat a demo dot traces the
+  // first beat's worth of the slide at the speed it must be traced.
+  drawSlide(sl, t) {
+    const { ctx } = this;
+    const beat = this.chart.beatMs;
+    const a = this.anchors[sl.from];
+    const b = this.anchors[sl.to];
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    const ux = (b.x - a.x) / len;
+    const uy = (b.y - a.y) / len;
+    const appear = sl.time - beat;
+    const alpha = t > sl.end ? 1 - (t - sl.end) / 250 : Math.min(1, (t - appear) / (beat * 0.5));
+
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, alpha);
+    ctx.lineCap = 'round';
+
+    // track
+    ctx.strokeStyle = 'rgba(185,164,255,0.28)';
+    ctx.lineWidth = 10;
+    line(ctx, a.x, a.y, b.x, b.y);
+
+    // direction chevrons
+    ctx.strokeStyle = 'rgba(185,164,255,0.8)';
+    ctx.lineWidth = 2;
+    for (let d = 22; d < len - 10; d += 26) {
+      const cx = a.x + ux * d;
+      const cy = a.y + uy * d;
+      ctx.beginPath();
+      ctx.moveTo(cx - ux * 4 - uy * 5, cy - uy * 4 + ux * 5);
+      ctx.lineTo(cx + ux * 2, cy + uy * 2);
+      ctx.lineTo(cx - ux * 4 + uy * 5, cy - uy * 4 - ux * 5);
+      ctx.stroke();
+    }
+
+    // traced so far
+    if (sl.done > 0) {
+      const p = this.slidePos(sl, sl.done);
+      ctx.strokeStyle = NOTE_COLOR.slide;
+      ctx.lineWidth = 10;
+      line(ctx, a.x, a.y, p.x, p.y);
+    }
+
+    // start point, with a ring closing in on the start time; end point
+    const k = Math.min(1, Math.max(0, (sl.time - t) / beat));
+    ctx.strokeStyle = NOTE_COLOR.slide;
+    ctx.lineWidth = 2;
+    circle(ctx, a.x, a.y, 10 + 22 * k);
+    ctx.stroke();
+    ctx.fillStyle = NOTE_COLOR.slide;
+    circle(ctx, a.x, a.y, 8);
+    ctx.fill();
+    ctx.fillStyle = '#f2f2f2';
+    circle(ctx, b.x, b.y, 5);
+    ctx.fill();
+
+    // demo dot (only during the beat before the slide)
+    if (t >= appear && t < sl.time) {
+      const p = this.slidePos(sl, (t - appear) / (sl.end - sl.time));
+      ctx.shadowColor = CHORD_GLOW;
+      ctx.shadowBlur = 14;
+      ctx.fillStyle = '#ffffff';
+      circle(ctx, p.x, p.y, 6);
+      ctx.fill();
+    }
+    ctx.restore();
   }
 
   drawHold(n, t, { held = false, alpha = 1, now = 0 }) {
@@ -478,6 +646,29 @@ export class Game {
     ctx.save();
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
+
+    if (ef.type === 'slide') {
+      // small burst on the slide checkpoint
+      ctx.globalAlpha = fade;
+      if (ef.j === 'MISS') {
+        ctx.lineWidth = 2;
+        line(ctx, ef.px - 5, ef.py - 5, ef.px + 5, ef.py + 5);
+        line(ctx, ef.px - 5, ef.py + 5, ef.px + 5, ef.py - 5);
+      } else {
+        ctx.strokeStyle = NOTE_COLOR.slide;
+        ctx.fillStyle = NOTE_COLOR.slide;
+        ctx.lineWidth = 2;
+        circle(ctx, ef.px, ef.py, 8 + 16 * ease);
+        ctx.stroke();
+        for (const sp of ef.sparks) {
+          const dist = sp.speed * ease;
+          diamond(ctx, ef.px + Math.cos(sp.angle) * dist, ef.py + Math.sin(sp.angle) * dist, sp.size * (1 - 0.5 * k));
+          ctx.fill();
+        }
+      }
+      ctx.restore();
+      return;
+    }
 
     if (ef.j === 'MISS') {
       const nw = fieldW * NOTE_W;
@@ -588,16 +779,29 @@ export class Game {
 }
 
 function sparks(j, type) {
-  const count = j === 'PERFECT' ? (type === 'flick' ? 10 : 6) : j === 'GREAT' ? 3 : 0;
+  const count = j === 'PERFECT' ? { flick: 10, slide: 3 }[type] ?? 6 : j === 'GREAT' ? 3 : 0;
+  const radial = type === 'flick' || type === 'slide';
   const out = [];
   for (let i = 0; i < count; i++) {
     out.push({
-      angle: type === 'flick' ? (i / count) * Math.PI * 2 + Math.random() * 0.4 : Math.PI * (0.1 + 0.8 * Math.random()),
-      speed: (type === 'flick' ? 70 : 34) + Math.random() * 30,
+      angle: radial ? (i / count) * Math.PI * 2 + Math.random() * 0.4 : Math.PI * (0.1 + 0.8 * Math.random()),
+      speed: ({ flick: 70, slide: 18 }[type] ?? 34) + Math.random() * 30,
       size: 2 + Math.random() * 2,
     });
   }
   return out;
+}
+
+function line(ctx, x1, y1, x2, y2) {
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.stroke();
+}
+
+function circle(ctx, cx, cy, r) {
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
 }
 
 function diamond(ctx, cx, cy, r) {

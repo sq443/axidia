@@ -3,10 +3,14 @@
 //   side: 'bottom' — falls from the top edge to the bottom judgment line
 //         'top'    — rises from the bottom edge to the top judgment line (vertical mirror)
 //         'center' — flick only: a diamond in the middle of the screen
+//         'free'   — slide only: runs between two anchor points (see below)
 //   type: 'tap'   — tap when it reaches the line
 //         'drag'  — just have a finger on it when it reaches the line (no tap needed)
 //         'hold'  — tap the head, keep a finger on it until `end`
 //         'flick' — move a touching finger in any direction when the diamond guide closes in
+//         'slide' — trace a straight line from anchor `from` to anchor `to` between `time` and `end`
+//   Slide anchors: T/B (top / bottom judgment line) + L/C/R. L and R are as far apart as the two
+//   lines are, so TL-TR-BR-BL forms a square around the center.
 // Free lane: x is the note's center as a fraction of the field width; there are no fixed lanes.
 // For now charts are generated from a fixed seed so every play of a difficulty is identical.
 
@@ -17,20 +21,26 @@ const BARS = 32;
 
 export const DIFFICULTIES = {
   EASY: {
-    seed: 34,
+    seed: 418,
     flick: 0.3,
-    patterns: ['half', 'quarter', 'holdSimple', 'dragSweep', 'halfDouble', 'mirrorHalf'],
+    slideLen: 2.5,
+    patterns: ['half', 'quarter', 'holdSimple', 'dragSweep', 'halfDouble', 'mirrorHalf', 'slide'],
   },
   NORMAL: {
-    seed: 46,
+    seed: 35,
     flick: 0.4,
-    patterns: ['quarter', 'eighthStair', 'zigzag', 'quarterDouble', 'holdSimple', 'dragWave', 'holdTaps', 'mirror'],
+    slideLen: 2,
+    patterns: [
+      'quarter', 'eighthStair', 'zigzag', 'quarterDouble', 'holdSimple', 'dragWave', 'holdTaps', 'mirror', 'slide',
+    ],
   },
   HARD: {
-    seed: 131,
+    seed: 484,
     flick: 0.5,
+    slideLen: 1.5,
     patterns: [
       'eighthStair', 'zigzag', 'quarterDouble', 'burst', 'eighthDouble', 'dragZig', 'holdTaps', 'mirror', 'seesaw',
+      'slide',
     ],
   },
 };
@@ -60,7 +70,7 @@ function nextX(rng, from, minDist = 0.2) {
 const flip = (side) => (side === 'top' ? 'bottom' : 'top');
 const pair = (rng) => [between(rng, MIN_X, 0.38), between(rng, 0.62, MAX_X)];
 
-// Each pattern fills one bar (4 beats) and returns [[beat, x, type?, lengthInBeats?, otherSide?], ...].
+// Each pattern fills one bar (4 beats) and returns [[beat, x, type?, lengthInBeats?, otherSide?, from?, to?], ...].
 // `otherSide` puts the note on the opposite judgment line from the rest of the bar.
 const PATTERNS = {
   half(rng, s) {
@@ -206,13 +216,27 @@ const PATTERNS = {
     s.x = x;
     return out;
   },
+
+  // ---- slide ----
+  // One straight slide starting on beat 1; its guide appears on beat 0.
+  slide(rng, s) {
+    const from = ANCHORS[Math.floor(rng() * ANCHORS.length)];
+    const rest = ANCHORS.filter((a) => a !== from);
+    const to = rest[Math.floor(rng() * rest.length)];
+    return [[1, 0.5, 'slide', s.slideLen, false, from, to]];
+  },
 };
+
+const ANCHORS = ['TL', 'TC', 'TR', 'BL', 'BC', 'BR'];
+const MIRROR_H = { L: 'R', C: 'C', R: 'L' };
+const mirrorH = (a) => a[0] + MIRROR_H[a[1]];
+const flipV = (a) => (a[0] === 'T' ? 'B' : 'T') + a[1];
 
 export function generateChart(difficulty) {
   const def = DIFFICULTIES[difficulty];
   const rng = mulberry32(def.seed);
   const beatMs = 60000 / BPM;
-  const state = { x: 0.5, hard: difficulty === 'HARD' };
+  const state = { x: 0.5, hard: difficulty === 'HARD', slideLen: def.slideLen };
   let raw = [];
 
   // Bar 0 is lead-in. Phrases are 2 bars; the second bar mirrors the first horizontally,
@@ -224,7 +248,16 @@ export function generateChart(difficulty) {
     const phrase = PATTERNS[name](rng, state);
     const sideA = intro || rng() < 0.5 ? 'bottom' : 'top';
     const sideB = !intro && rng() < 0.5 ? flip(sideA) : sideA;
-    for (const [beat, x, type = 'tap', len = 0, other = false] of phrase) {
+    for (const [beat, x, type = 'tap', len = 0, other = false, from, to] of phrase) {
+      if (type === 'slide') {
+        // Slides mirror like everything else: horizontally in the answer bar, vertically on the top side.
+        const v = (a, side) => (side === 'top' ? flipV(a) : a);
+        raw.push([bar * 4 + beat, x, type, len, 'free', v(from, sideA), v(to, sideA)]);
+        if (bar + 1 < BARS) {
+          raw.push([(bar + 1) * 4 + beat, x, type, len, 'free', v(mirrorH(from), sideB), v(mirrorH(to), sideB)]);
+        }
+        continue;
+      }
       raw.push([bar * 4 + beat, x, type, len, other ? flip(sideA) : sideA]);
       if (bar + 1 < BARS) raw.push([(bar + 1) * 4 + beat, 1 - x, type, len, other ? flip(sideB) : sideB]);
     }
@@ -232,7 +265,7 @@ export function generateChart(difficulty) {
 
     // Some phrases open with a center flick, which takes over that beat (unless a hold starts there).
     const fb = bar * 4;
-    const flick = !intro && (bar === 5 || rng() < def.flick);
+    const flick = !intro && name !== 'slide' && (bar === 5 || rng() < def.flick);
     if (flick && !raw.some((r) => r[0] === fb && r[2] === 'hold')) {
       raw = raw.filter((r) => r[0] !== fb);
       raw.push([fb, 0.5, 'flick', 0, 'center']);
@@ -241,9 +274,10 @@ export function generateChart(difficulty) {
   raw.push([BARS * 4, 0.5, 'flick', 0, 'center']); // finale
 
   const notes = raw
-    .map(([beat, x, type, len, side]) => {
+    .map(([beat, x, type, len, side, from, to]) => {
       const n = { type, side, time: beat * beatMs, x: Math.round(x * 1000) / 1000 };
-      if (type === 'hold') n.end = (beat + len) * beatMs;
+      if (type === 'hold' || type === 'slide') n.end = (beat + len) * beatMs;
+      if (type === 'slide') Object.assign(n, { from, to });
       return n;
     })
     .sort((a, b) => a.time - b.time || a.x - b.x);

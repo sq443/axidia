@@ -153,6 +153,11 @@ button {
   transform: rotate(45deg);
 }
 
+.legend .n-slide {
+  height: 4px;
+  background: #b9a4ff;
+}
+
 .legend .n-drag {
   height: 4px;
   background: var(--drag);
