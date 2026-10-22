@@ -43,6 +43,8 @@ export const DIFFICULTIES = {
       'slide',
     ],
   },
+  // Test chart: slides only, every shape at several speeds.
+  SLIDE: { test: 'slides' },
 };
 
 function mulberry32(seed) {
@@ -232,8 +234,29 @@ const MIRROR_H = { L: 'R', C: 'C', R: 'L' };
 const mirrorH = (a) => a[0] + MIRROR_H[a[1]];
 const flipV = (a) => (a[0] === 'T' ? 'B' : 'T') + a[1];
 
+// Every directed anchor pair once — horizontal, then vertical, then diagonal — cycling through
+// lengths so each shape shows up at different speeds. Each slide's guide appears as the previous
+// slide ends.
+function slideTestChart(difficulty) {
+  const beatMs = 60000 / BPM;
+  const LENGTHS = [1, 2, 0.5, 1.5, 3]; // beats
+  const kind = (a, b) => (a[0] === b[0] ? 0 : a[1] === b[1] ? 1 : 2);
+  const pairs = ANCHORS.flatMap((a) => ANCHORS.filter((b) => b !== a).map((b) => [a, b]));
+  pairs.sort((p, q) => kind(...p) - kind(...q));
+  const notes = [];
+  let beat = 4;
+  pairs.forEach(([from, to], i) => {
+    const len = LENGTHS[i % LENGTHS.length];
+    notes.push({ type: 'slide', side: 'free', time: beat * beatMs, end: (beat + len) * beatMs, x: 0.5, from, to });
+    beat += len + 2;
+  });
+  const last = notes[notes.length - 1].end;
+  return { difficulty, bpm: BPM, beatMs, notes, duration: last + 1200 };
+}
+
 export function generateChart(difficulty) {
   const def = DIFFICULTIES[difficulty];
+  if (def.test === 'slides') return slideTestChart(difficulty);
   const rng = mulberry32(def.seed);
   const beatMs = 60000 / BPM;
   const state = { x: 0.5, hard: difficulty === 'HARD', slideLen: def.slideLen };

@@ -546,8 +546,8 @@ export class Game {
     ctx.restore();
   }
 
-  // The whole slide fades in SLIDE_LEAD_BEATS beats before it starts. During the last beat before
-  // it starts, a demo dot traces the first beat's worth of the slide at the slide's pace.
+  // The whole slide fades in SLIDE_LEAD_BEATS beats before it starts. At the same moment a demo
+  // dot starts tracing the first beat's worth of the slide at the slide's pace (for one beat).
   drawSlide(sl, t) {
     const { ctx } = this;
     const beat = this.chart.beatMs;
@@ -602,9 +602,10 @@ export class Game {
     circle(ctx, b.x, b.y, 5);
     ctx.fill();
 
-    // demo dot (only during the beat before the slide)
-    if (t >= sl.time - beat && t < sl.time) {
-      const p = this.slidePos(sl, (t - (sl.time - beat)) / (sl.end - sl.time));
+    // demo dot: starts with the guide, runs for one beat (or until it reaches the end point)
+    const demo = (t - appear) / (sl.end - sl.time);
+    if (t >= appear && t < appear + beat && demo <= 1) {
+      const p = this.slidePos(sl, demo);
       ctx.shadowColor = CHORD_GLOW;
       ctx.shadowBlur = 14;
       ctx.fillStyle = '#ffffff';
