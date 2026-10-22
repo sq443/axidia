@@ -12,6 +12,11 @@ export function unlock() {
   if (ctx.state === 'suspended') ctx.resume();
 }
 
+// The shared AudioContext (null until unlock()).
+export function audio() {
+  return ctx;
+}
+
 export function setEnabled(value) {
   enabled = value;
 }

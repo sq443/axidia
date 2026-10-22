@@ -87,12 +87,15 @@ export class Game {
     if (this.running) this.draw(this.songTime(performance.now()), performance.now());
   }
 
-  start(chart, { speed }) {
+  // offset: ms the game clock runs behind the audio (device latency compensation).
+  // sync: optional () => performance time at which song time 0 is heard; the game clock follows it.
+  start(chart, { speed, offset = 0, sync = null }) {
     this.chart = chart;
+    this.offset = offset;
+    this.sync = sync;
     // A slide runs through anchors (`path`), each segment straight or an arc (`bends`). It is judged
-    // at two points, its start and its
-    // end; the pace in between is free, but the finger has to pass its invisible midpoints in order.
-    // The slide itself is kept for drawing.
+    // at two points, its start and its end; the pace in between is free, but the finger has to pass
+    // its invisible midpoints in order. The slide itself is kept for drawing.
     this.slides = [];
     const notes = [];
     for (const n of chart.notes) {
@@ -132,7 +135,7 @@ export class Game {
 
     const first = this.notes.length ? this.notes[0].time : 0;
     const lead = Math.max(1200, this.approach - first + 600);
-    this.startAt = performance.now() + lead; // songTime = now - startAt
+    this.startAt = performance.now() + lead + offset; // songTime = now - startAt
     this.paused = false;
     this.resumeAt = 0;
     if (!this.running) {
@@ -166,6 +169,11 @@ export class Game {
       this.startAt += this.resumeAt - this.pausedAt;
       this.paused = false;
       this.resumeAt = 0;
+    }
+    if (this.sync && !this.paused) {
+      // Follow the audio clock: snap if far off, otherwise ease out jitter.
+      const diff = this.sync() + this.offset - this.startAt;
+      this.startAt += Math.abs(diff) > 100 ? diff : diff * 0.05;
     }
     const t = this.songTime(now);
     if (!this.paused) {

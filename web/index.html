@@ -53,6 +53,20 @@
             <button id="sfx" class="toggle">ON</button>
           </div>
         </div>
+        <div class="row">
+          <div class="group">
+            <div class="label">OFFSET</div>
+            <div class="stepper">
+              <button data-offset="-1" aria-label="オフセットを減らす">−</button>
+              <output id="offset">0ms</output>
+              <button data-offset="1" aria-label="オフセットを増やす">+</button>
+            </div>
+          </div>
+          <div class="group">
+            <div class="label">CALIBRATE</div>
+            <button id="calibrate" class="toggle">測定する</button>
+          </div>
+        </div>
         <button id="start" class="primary">START</button>
       </div>
     </div>
@@ -65,6 +79,19 @@
       <button id="resume" class="primary">RESUME</button>
       <button id="retry-p" class="ghost">RETRY</button>
       <button id="quit" class="ghost">TITLE</button>
+    </div>
+  </section>
+
+  <section id="calib" class="screen" hidden>
+    <div class="stack">
+      <div class="label">OFFSET CALIBRATION</div>
+      <p class="hint">クリック音に合わせて、画面のどこでもタップしてください。<br>音だけを聞いて、6回以上タップすると測定値が出ます。</p>
+      <div class="calib-value" id="calib-value">—</div>
+      <div class="best" id="calib-taps">0 taps</div>
+      <div class="row">
+        <button id="calib-back" class="ghost">BACK</button>
+        <button id="calib-apply" class="primary">APPLY</button>
+      </div>
     </div>
   </section>
 

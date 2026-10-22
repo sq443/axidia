@@ -253,6 +253,26 @@ button {
   border: 1px solid var(--line);
 }
 
+#calib {
+  touch-action: none;
+}
+
+.hint {
+  color: var(--dim);
+  font-size: 11px;
+  line-height: 1.7;
+}
+
+.calib-value {
+  font-size: 44px;
+  font-weight: 200;
+  letter-spacing: 0.06em;
+}
+
+.primary:disabled {
+  opacity: 0.35;
+}
+
 #pause .stack {
   max-width: 280px;
 }
