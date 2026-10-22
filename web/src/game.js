@@ -22,7 +22,7 @@ const FLICK_MOVE = 4; // px a touching finger must move in one event to count as
 const FLICK_REACH = 2.5; // the finger must be within this many flick-diamond sizes of the center
 const SLIDE_REACH = 100; // px from a slide's start / end point that a finger may be (at most)
 const SLIDE_REACH_SHARE = 0.6; // ...and at most this share of the slide's length (keeps short slides' ends apart)
-const SLIDE_LEAD_BEATS = 1; // the slide's guide appears this many beats before it starts
+export const SLIDE_LEAD_BEATS = 2; // the slide's guide appears this many beats before it starts
 const SLIDE_END = { PERFECT: 250, GREAT: 400 }; // ms, ± around a slide's end time
 const MID_SPACING = 70; // px between a slide's invisible midpoints (at least 2 per slide)
 const MID_REACH = 50; // px a finger must pass within to clear a midpoint
@@ -91,8 +91,10 @@ export class Game {
   // sync: optional () => performance time at which song time 0 is heard; the game clock follows it.
   // from: song time (ms) to start playing at (the chart editor's test play); notes before it are
   // expected to be removed from the chart already.
-  start(chart, { speed, offset = 0, sync = null, from = 0 }) {
+  // auto: play every note PERFECT by itself (the chart editor's auto mode).
+  start(chart, { speed, offset = 0, sync = null, from = 0, auto = false }) {
     this.chart = chart;
+    this.auto = auto;
     this.offset = offset;
     this.sync = sync;
     // A slide runs through anchors (`path`), each segment straight or an arc (`bends`). It is judged
@@ -179,6 +181,7 @@ export class Game {
     }
     const t = this.songTime(now);
     if (!this.paused) {
+      if (this.auto) this.autoPlay(t);
       for (const p of this.pointers.values()) this.catchDrags(t, p.x, p.x, p.side);
       this.catchSlides(t);
       this.resolveCaught(t);
@@ -193,6 +196,25 @@ export class Game {
       return;
     }
     requestAnimationFrame(this.frame);
+  }
+
+  // Auto mode: every note is taken PERFECT right on time; holds are held to the end and slides
+  // traced at their pace.
+  autoPlay(t) {
+    for (let i = this.head; i < this.notes.length; i++) {
+      const n = this.notes[i];
+      if (n.time > t) break;
+      if (n.judged || n.caught) continue;
+      if (n.type === 'slide') {
+        n.caught = true; // judged PERFECT at its time by resolveCaught
+        continue;
+      }
+      this.judge(n, 'PERFECT', 0);
+      if (n.type === 'hold') this.holding.push(n);
+    }
+    for (const sl of this.slides) {
+      if (t >= sl.time && t <= sl.end) sl.done = Math.max(sl.done, (t - sl.time) / (sl.end - sl.time));
+    }
   }
 
   // ---- input ----
@@ -451,7 +473,7 @@ export class Game {
         this.record('PERFECT', 0, n, 'hold');
         return false;
       }
-      let held = false;
+      let held = this.auto;
       for (const p of this.pointers.values()) {
         if (p.side === n.side && Math.abs(p.x - n.x) <= NOTE_W / 2 + HOLD_SLACK) held = true;
       }
@@ -876,6 +898,15 @@ export class Game {
       ctx.fillStyle = 'rgba(242,242,242,0.35)';
       ctx.font = '500 9px system-ui, -apple-system, sans-serif';
       ctx.fillText('C O M B O', cx, comboY + 21);
+    }
+
+    if (this.auto) {
+      // under the score
+      ctx.textAlign = 'right';
+      ctx.fillStyle = 'rgba(124,245,255,0.8)';
+      ctx.font = '500 10px system-ui, -apple-system, sans-serif';
+      ctx.fillText('A U T O', fieldX + fieldW - 4, 48);
+      ctx.textAlign = 'center';
     }
 
     // ready / countdown

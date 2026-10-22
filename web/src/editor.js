@@ -1,6 +1,6 @@
 // AXIDIA chart editor. Charts are edited in beats (so BPM / OFFSET changes keep notes on the grid)
 // and saved as the chart JSON that songs.js loads.
-import { Game, makeSeg } from './game.js';
+import { Game, makeSeg, SLIDE_LEAD_BEATS } from './game.js';
 import { normalizeChart } from './songs.js';
 import { generateChart } from './chart.js';
 import { Music, trackFor, click } from './music.js';
@@ -123,7 +123,7 @@ const redo = () => restore(redoStack, undoStack);
 
 // ---- editor preferences (music volume, test play speed) ----
 
-const prefs = { volume: 1, speed: null, ...readJSON(PREFS_KEY) };
+const prefs = { volume: 1, speed: null, auto: false, ...readJSON(PREFS_KEY) };
 prefs.speed ??= readJSON(GAME_KEY).speed ?? 3; // start from the game's speed
 
 function readJSON(key) {
@@ -439,6 +439,14 @@ function drawSlideNote(n, ghost = false) {
   const ye = yOf(n.endBeat);
   const sel = n === selected;
   ctx.globalAlpha = ghost ? 0.35 : 1;
+  // where the slide's guide is on screen in the game (SLIDE_LEAD_BEATS before it starts)
+  const yg = yOf(n.beat - SLIDE_LEAD_BEATS);
+  ctx.fillStyle = 'rgba(185,164,255,0.08)';
+  ctx.fillRect(c.x + 2, y, c.w - 4, yg - y);
+  ctx.strokeStyle = 'rgba(185,164,255,0.3)';
+  ctx.setLineDash([3, 4]);
+  ctx.strokeRect(c.x + 2.5, y + 0.5, c.w - 5, yg - y - 1);
+  ctx.setLineDash([]);
   ctx.fillStyle = sel ? 'rgba(124,245,255,0.5)' : 'rgba(185,164,255,0.45)';
   ctx.fillRect(c.x + 10, ye, 8, y - ye);
   ctx.fillStyle = sel ? SELECT : COLOR.slide;
@@ -1056,7 +1064,13 @@ function renderPrefs() {
   $('volume').value = String(Math.round(prefs.volume * 100));
   $('volume-value').textContent = `${Math.round(prefs.volume * 100)}%`;
   $('speed').textContent = prefs.speed.toFixed(1);
+  $('auto').checked = prefs.auto;
 }
+
+$('auto').addEventListener('change', (e) => {
+  prefs.auto = e.target.checked;
+  savePrefs();
+});
 
 $('volume').addEventListener('input', (e) => {
   prefs.volume = Number(e.target.value) / 100;
@@ -1102,7 +1116,7 @@ async function testPlay(fromStart) {
   $('tp').hidden = false;
   $('tp-result').hidden = true;
   game.resize();
-  game.start(chart, { speed, offset, sync: () => music.zeroPerf(), from });
+  game.start(chart, { speed, offset, sync: () => music.zeroPerf(), from, auto: prefs.auto });
   music.playAt(track, 0, game.startAt - offset);
 }
 

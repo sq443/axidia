@@ -231,7 +231,7 @@ const PATTERNS = {
   },
 
   // ---- slide ----
-  // One slide starting on beat 1 (its guide appears one beat earlier, on beat 0), with up to
+  // One slide starting on beat 2 (its guide appears two beats earlier, on beat 0), with up to
   // `slideRelays` relay points; each segment becomes an arc with probability `slideArcs` when it
   // can (and stays on the grid). Each extra segment adds half a beat, ending by beat 3.5.
   slide(rng, s) {
@@ -247,8 +247,8 @@ const PATTERNS = {
       const options = ['L', 'R'].filter((bend) => arcFits(path[i], b, bend));
       return options.length ? pick(options) : null;
     });
-    const len = Math.min(2.5, s.slideLen + 0.5 * relays);
-    return [[1, 0.5, 'slide', len, false, path, bends]];
+    const len = Math.min(1.5, s.slideLen + 0.5 * relays);
+    return [[2, 0.5, 'slide', len, false, path, bends]];
   },
 };
 
@@ -288,8 +288,8 @@ function parseSlide(shape) {
 }
 
 // Hand-picked shapes — straight, through the middle row, V / Λ, Z, loops, the diamond, then arcs
-// (notation as in parseSlide) — at different lengths. Slides are two beats apart, so each guide appears one beat after the
-// previous slide ends.
+// (notation as in parseSlide) — at different lengths. Slides are three beats apart, so each guide
+// appears a beat after the previous slide ends and no two slides are ever on screen together.
 const SLIDE_TESTS = [
   ['TL>TR', 1],
   ['ML>MR', 1],
@@ -331,7 +331,7 @@ function slideTestChart(difficulty) {
   for (const [shape, len] of SLIDE_TESTS) {
     const { path, bends } = parseSlide(shape);
     notes.push({ type: 'slide', side: 'free', time: beat * beatMs, end: (beat + len) * beatMs, x: 0.5, path, bends });
-    beat += len + 2;
+    beat += len + 3;
   }
   const last = notes[notes.length - 1].end;
   return { difficulty, bpm: BPM, beatMs, notes, duration: last + 1200 };
