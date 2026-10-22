@@ -21,9 +21,10 @@ const HOLD_SLACK = 0.07; // looser tolerance for keeping a hold
 const RELEASE_GRACE = 150; // ms before a hold's end where letting go still counts
 const FLICK_MOVE = 4; // px a touching finger must move in one event to count as a flick
 const FLICK_REACH = 2.5; // the finger must be within this many flick-diamond sizes of the center
-const SLIDE_REACH = 44; // px from a slide checkpoint that a finger may be
-const SLIDE_ALIGN = 0.5; // cos of the max angle between the finger's motion and the slide (60°)
+const SLIDE_REACH = 100; // px from a slide's start / end point that a finger may be
+const SLIDE_ALIGN = 0.5; // cos of the max angle between the finger's travel and the slide (60°)
 const SLIDE_MOTION_MS = 150; // how long a finger's last motion direction stays valid
+const SLIDE_LEAD_BEATS = 2; // the slide's guide appears this many beats before it starts
 const SHOW_ANCHORS = true; // debug: draw the six slide anchor points
 // Judgment lines, fraction of screen height. Notes for the bottom line fall from the top edge;
 // notes for the top line rise from the bottom edge. Touches in each half of the screen play that half's line.
@@ -84,8 +85,8 @@ export class Game {
 
   start(chart, { speed }) {
     this.chart = chart;
-    // A slide is judged as a chain of checkpoints every half beat (each like a drag),
-    // while the slide itself is kept for drawing.
+    // A slide is judged at two checkpoints, its start and its end (each like a drag);
+    // the pace in between is free. The slide itself is kept for drawing.
     this.slides = [];
     const notes = [];
     for (const n of chart.notes) {
@@ -93,13 +94,10 @@ export class Game {
         notes.push({ ...n, judged: null });
         continue;
       }
-      const slide = { ...n, done: 0 }; // done: furthest point (0..1) traced so far
+      // done: furthest point (0..1) traced so far; finger / origin: the pointer that took the start
+      const slide = { ...n, done: 0, finger: null, origin: null };
       this.slides.push(slide);
-      const steps = Math.max(1, Math.round((n.end - n.time) / (chart.beatMs / 2)));
-      for (let i = 0; i <= steps; i++) {
-        const u = i / steps;
-        notes.push({ type: 'slide', side: 'free', slide, u, time: n.time + (n.end - n.time) * u, judged: null });
-      }
+      for (const u of [0, 1]) notes.push({ type: 'slide', side: 'free', slide, u, time: u ? n.end : n.time, judged: null });
     }
     this.notes = notes.sort((a, b) => a.time - b.time);
     // Notes sharing a time are chords: they glow so they read as "hit together".
@@ -258,29 +256,56 @@ export class Game {
     }
   }
 
-  // A slide checkpoint is caught by a finger near it that is moving roughly from `from` toward `to`.
-  // The first checkpoint only needs a finger there, so players can rest on the start point.
+  // Start: any finger near the start point on time (it may rest there).
+  // End: a finger near the end point on time that got there going from `from` toward `to` —
+  // the finger that took the start must have traveled that way overall (so it may arrive early
+  // and wait); any other finger must be moving that way right now.
   catchSlides(t) {
     const now = performance.now();
     for (let i = this.head; i < this.notes.length; i++) {
       const n = this.notes[i];
       if (n.time - t > WINDOW.GREAT) break;
       if (n.type !== 'slide' || n.judged || n.caught || t - n.time > WINDOW.GOOD) continue;
-      const pos = this.slidePos(n.slide, n.u);
-      const a = this.anchors[n.slide.from];
-      const b = this.anchors[n.slide.to];
-      const len = Math.hypot(b.x - a.x, b.y - a.y);
-      const ux = (b.x - a.x) / len;
-      const uy = (b.y - a.y) / len;
-      for (const p of this.pointers.values()) {
+      const sl = n.slide;
+      const pos = this.slidePos(sl, n.u);
+      const { ux, uy } = this.slideDir(sl);
+      for (const [id, p] of this.pointers) {
         if (Math.hypot(p.px - pos.x, p.py - pos.y) > SLIDE_REACH) continue;
-        const aligned = now - p.movedAt < SLIDE_MOTION_MS && p.dx * ux + p.dy * uy >= SLIDE_ALIGN;
-        if (n.u === 0 || aligned) {
+        if (n.u === 0) {
+          n.caught = true;
+          sl.finger = id;
+          sl.origin = { x: p.px, y: p.py };
+          break;
+        }
+        let aligned = now - p.movedAt < SLIDE_MOTION_MS && p.dx * ux + p.dy * uy >= SLIDE_ALIGN;
+        if (id === sl.finger) {
+          const tx = p.px - sl.origin.x;
+          const ty = p.py - sl.origin.y;
+          const dist = Math.hypot(tx, ty);
+          aligned ||= dist > 0 && (tx * ux + ty * uy) / dist >= SLIDE_ALIGN;
+        }
+        if (aligned) {
           n.caught = true;
           break;
         }
       }
     }
+    // Light up the slide up to where its finger is (purely visual).
+    for (const sl of this.slides) {
+      const p = sl.finger !== null && this.pointers.get(sl.finger);
+      if (!p || t < sl.time - WINDOW.GOOD || t > sl.end + WINDOW.GOOD) continue;
+      const a = this.anchors[sl.from];
+      const { ux, uy, len } = this.slideDir(sl);
+      const u = ((p.px - a.x) * ux + (p.py - a.y) * uy) / len;
+      sl.done = Math.max(sl.done, Math.min(1, u));
+    }
+  }
+
+  slideDir(slide) {
+    const a = this.anchors[slide.from];
+    const b = this.anchors[slide.to];
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    return { ux: (b.x - a.x) / len, uy: (b.y - a.y) / len, len };
   }
 
   slidePos(slide, u) {
@@ -427,7 +452,7 @@ export class Game {
 
     // slides (from one beat before they start) and flicks sit underneath everything that moves
     for (const sl of this.slides) {
-      if (t >= sl.time - this.chart.beatMs && t <= sl.end + 250) this.drawSlide(sl, t);
+      if (t >= sl.time - this.chart.beatMs * SLIDE_LEAD_BEATS && t <= sl.end + 250) this.drawSlide(sl, t);
     }
     for (let i = this.head; i < this.notes.length; i++) {
       const n = this.notes[i];
@@ -521,8 +546,8 @@ export class Game {
     ctx.restore();
   }
 
-  // The whole slide fades in one beat before it starts. During that beat a demo dot traces the
-  // first beat's worth of the slide at the speed it must be traced.
+  // The whole slide fades in SLIDE_LEAD_BEATS beats before it starts. During the last beat before
+  // it starts, a demo dot traces the first beat's worth of the slide at the slide's pace.
   drawSlide(sl, t) {
     const { ctx } = this;
     const beat = this.chart.beatMs;
@@ -531,7 +556,7 @@ export class Game {
     const len = Math.hypot(b.x - a.x, b.y - a.y);
     const ux = (b.x - a.x) / len;
     const uy = (b.y - a.y) / len;
-    const appear = sl.time - beat;
+    const appear = sl.time - beat * SLIDE_LEAD_BEATS;
     const alpha = t > sl.end ? 1 - (t - sl.end) / 250 : Math.min(1, (t - appear) / (beat * 0.5));
 
     ctx.save();
@@ -565,7 +590,7 @@ export class Game {
     }
 
     // start point, with a ring closing in on the start time; end point
-    const k = Math.min(1, Math.max(0, (sl.time - t) / beat));
+    const k = Math.min(1, Math.max(0, (sl.time - t) / (beat * SLIDE_LEAD_BEATS)));
     ctx.strokeStyle = NOTE_COLOR.slide;
     ctx.lineWidth = 2;
     circle(ctx, a.x, a.y, 10 + 22 * k);
@@ -578,8 +603,8 @@ export class Game {
     ctx.fill();
 
     // demo dot (only during the beat before the slide)
-    if (t >= appear && t < sl.time) {
-      const p = this.slidePos(sl, (t - appear) / (sl.end - sl.time));
+    if (t >= sl.time - beat && t < sl.time) {
+      const p = this.slidePos(sl, (t - (sl.time - beat)) / (sl.end - sl.time));
       ctx.shadowColor = CHORD_GLOW;
       ctx.shadowBlur = 14;
       ctx.fillStyle = '#ffffff';

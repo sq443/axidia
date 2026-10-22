@@ -23,13 +23,13 @@ export const DIFFICULTIES = {
   EASY: {
     seed: 418,
     flick: 0.3,
-    slideLen: 2.5,
+    slideLen: 1.5,
     patterns: ['half', 'quarter', 'holdSimple', 'dragSweep', 'halfDouble', 'mirrorHalf', 'slide'],
   },
   NORMAL: {
     seed: 35,
     flick: 0.4,
-    slideLen: 2,
+    slideLen: 1.5,
     patterns: [
       'quarter', 'eighthStair', 'zigzag', 'quarterDouble', 'holdSimple', 'dragWave', 'holdTaps', 'mirror', 'slide',
     ],
@@ -37,7 +37,7 @@ export const DIFFICULTIES = {
   HARD: {
     seed: 484,
     flick: 0.5,
-    slideLen: 1.5,
+    slideLen: 1,
     patterns: [
       'eighthStair', 'zigzag', 'quarterDouble', 'burst', 'eighthDouble', 'dragZig', 'holdTaps', 'mirror', 'seesaw',
       'slide',
@@ -218,12 +218,12 @@ const PATTERNS = {
   },
 
   // ---- slide ----
-  // One straight slide starting on beat 1; its guide appears on beat 0.
+  // One straight slide starting on beat 2; its guide appears two beats earlier, on beat 0.
   slide(rng, s) {
     const from = ANCHORS[Math.floor(rng() * ANCHORS.length)];
     const rest = ANCHORS.filter((a) => a !== from);
     const to = rest[Math.floor(rng() * rest.length)];
-    return [[1, 0.5, 'slide', s.slideLen, false, from, to]];
+    return [[2, 0.5, 'slide', s.slideLen, false, from, to]];
   },
 };
 
