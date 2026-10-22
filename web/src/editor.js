@@ -8,6 +8,7 @@ import * as sfx from './sfx.js';
 
 const $ = (id) => document.getElementById(id);
 const DRAFT_KEY = 'axidia.editor.draft';
+const PREFS_KEY = 'axidia.editor.prefs';
 const GAME_KEY = 'axidia.v1';
 const NOTE_W = 0.11; // as in the game
 const ANCHORS = ['TL', 'TC', 'TR', 'ML', 'MC', 'MR', 'BL', 'BC', 'BR'];
@@ -120,6 +121,27 @@ function restore(from, to) {
 const undo = () => restore(undoStack, redoStack);
 const redo = () => restore(redoStack, undoStack);
 
+// ---- editor preferences (music volume, test play speed) ----
+
+const prefs = { volume: 1, speed: null, ...readJSON(PREFS_KEY) };
+prefs.speed ??= readJSON(GAME_KEY).speed ?? 3; // start from the game's speed
+
+function readJSON(key) {
+  try {
+    return JSON.parse(localStorage.getItem(key)) || {};
+  } catch {
+    return {};
+  }
+}
+
+function savePrefs() {
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+  } catch {
+    // not kept
+  }
+}
+
 // ---- view state ----
 
 const DIFFS = ['EASY', 'NORMAL', 'HARD'];
@@ -129,6 +151,9 @@ let selected = null;
 
 const canvas = $('timeline');
 const ctx = canvas.getContext('2d');
+const octx = $('overview').getContext('2d');
+let OW = 0;
+let OH = 0;
 let W = 0;
 let H = 0;
 let cols = {};
@@ -154,6 +179,12 @@ function layout() {
   };
   cols = { ruler: col(ruler), top: col(field), bottom: col(field), flick: col(flick), slide: col(slide) };
   playY = H - 90;
+  const ov = $('overview');
+  OW = ov.clientWidth;
+  OH = ov.clientHeight;
+  ov.width = Math.round(OW * dpr);
+  ov.height = Math.round(OH * dpr);
+  octx.setTransform(dpr, 0, 0, dpr, 0, 0);
   draw();
 }
 
@@ -257,7 +288,77 @@ function render() {
   ctx.textBaseline = 'bottom';
   ctx.font = '500 11px system-ui, sans-serif';
   ctx.fillText(formatBeat(view.beat), W - 6, playY - 4);
+  drawOverview(b0, b1);
   updateTransport();
+}
+
+// ---- overview bar: the whole song, bottom (start) to top (end) ----
+
+const OV_PAD = 8;
+const overviewBeats = () => Math.max(lengthBeats(), 4);
+const ovY = (beat) => OH - OV_PAD - (beat / overviewBeats()) * (OH - OV_PAD * 2);
+const ovBeat = (y) => ((OH - OV_PAD - y) / (OH - OV_PAD * 2)) * overviewBeats();
+
+function drawOverview(b0, b1) {
+  const c = octx;
+  c.fillStyle = '#101012';
+  c.fillRect(0, 0, OW, OH);
+  // waveform, faint
+  if (peaks) {
+    c.fillStyle = 'rgba(124,245,255,0.16)';
+    for (let y = 0; y < OH; y += 2) {
+      const t1 = msOf(ovBeat(y));
+      const t0 = msOf(ovBeat(y + 2));
+      let m = 0;
+      for (let i = Math.max(0, Math.floor(t0 / PEAK_MS)); i <= Math.min(peaks.length - 1, Math.floor(t1 / PEAK_MS)); i++) {
+        m = Math.max(m, peaks[i]);
+      }
+      if (m > 0.02) c.fillRect(OW / 2 - (m * OW) / 2, y, m * OW, 2);
+    }
+  }
+  // notes: TOP / BOTTOM line notes on the left / middle, flicks and slides on the right
+  const laneX = { top: 5, bottom: 16, center: 28, free: 28 };
+  for (const n of doc.notes) {
+    const side = n.type === 'flick' ? 'center' : n.type === 'slide' ? 'free' : n.side;
+    const y = ovY(n.beat);
+    c.fillStyle = COLOR[n.type];
+    if (n.endBeat !== undefined) {
+      const ye = ovY(n.endBeat);
+      c.globalAlpha = 0.6;
+      c.fillRect(laneX[side] + 3, ye, 2, Math.max(1, y - ye));
+      c.globalAlpha = 1;
+    }
+    c.fillRect(laneX[side], y - 1, 8, 2);
+  }
+  // what the timeline shows, and the playhead
+  const y1 = ovY(b1);
+  const y0 = ovY(b0);
+  c.fillStyle = 'rgba(255,255,255,0.08)';
+  c.fillRect(0, y1, OW, y0 - y1);
+  c.strokeStyle = 'rgba(255,255,255,0.35)';
+  c.lineWidth = 1;
+  c.strokeRect(0.5, y1 + 0.5, OW - 1, y0 - y1 - 1);
+  c.fillStyle = '#ff5d6c';
+  c.fillRect(0, ovY(view.beat) - 1, OW, 2);
+}
+
+// Click / drag on the overview to jump; playback carries on from there.
+let ovDrag = null;
+$('overview').addEventListener('pointerdown', (e) => {
+  $('overview').setPointerCapture(e.pointerId);
+  ovDrag = { resume: !!playing };
+  stopPlay();
+  seekOverview(e);
+});
+$('overview').addEventListener('pointermove', (e) => ovDrag && seekOverview(e));
+$('overview').addEventListener('pointerup', () => {
+  if (ovDrag?.resume) play();
+  ovDrag = null;
+});
+
+function seekOverview(e) {
+  const r = $('overview').getBoundingClientRect();
+  setViewBeat(ovBeat(e.clientY - r.top));
 }
 
 let peaks = null; // max |sample| per PEAK_MS
@@ -885,10 +986,12 @@ async function play() {
   const src = ac.createBufferSource();
   src.buffer = buf;
   src.playbackRate.value = rate;
-  src.connect(ac.destination);
+  const gain = ac.createGain();
+  gain.gain.value = prefs.volume;
+  src.connect(gain).connect(ac.destination);
   const lead = Math.max(0, -startMs) / 1000 / rate;
   src.start(startCtx + lead, Math.max(0, startMs) / 1000);
-  playing = { src, startCtx, startMs, rate, scheduled: startMs - 1 };
+  playing = { src, gain, startCtx, startMs, rate, scheduled: startMs - 1 };
   playing.timer = setInterval(scheduleTicks, 25);
   scheduleTicks();
   $('play').textContent = '❚❚';
@@ -947,6 +1050,30 @@ function scheduleTicks() {
   p.scheduled = horizon;
 }
 
+// ---- volume / test play speed ----
+
+function renderPrefs() {
+  $('volume').value = String(Math.round(prefs.volume * 100));
+  $('volume-value').textContent = `${Math.round(prefs.volume * 100)}%`;
+  $('speed').textContent = prefs.speed.toFixed(1);
+}
+
+$('volume').addEventListener('input', (e) => {
+  prefs.volume = Number(e.target.value) / 100;
+  music.volume = prefs.volume;
+  if (playing) playing.gain.gain.value = prefs.volume;
+  renderPrefs();
+  savePrefs();
+});
+
+function setSpeed(v) {
+  prefs.speed = Math.min(8, Math.max(1, v));
+  renderPrefs();
+  savePrefs();
+}
+$('speed-down').addEventListener('click', () => setSpeed(prefs.speed - 0.5));
+$('speed-up').addEventListener('click', () => setSpeed(prefs.speed + 0.5));
+
 $('play').addEventListener('click', play);
 $('to-start').addEventListener('click', () => {
   stopPlay();
@@ -960,14 +1087,7 @@ $('zoom-out').addEventListener('click', () => zoom(1 / 1.25));
 
 const game = new Game($('tp-stage'), { onEnd: showTestResult });
 const music = new Music();
-
-function gameSettings() {
-  try {
-    return JSON.parse(localStorage.getItem(GAME_KEY)) || {};
-  } catch {
-    return {};
-  }
-}
+music.volume = prefs.volume;
 
 async function testPlay(fromStart) {
   stopPlay();
@@ -977,7 +1097,8 @@ async function testPlay(fromStart) {
   chart.notes = chart.notes.filter((n) => n.time >= from - 1);
   if (!chart.notes.length) return toast('この位置より後にノーツがありません');
   const track = await currentTrack();
-  const { speed = 3, offset = 0 } = gameSettings();
+  const { offset = 0 } = readJSON(GAME_KEY);
+  const speed = prefs.speed;
   $('tp').hidden = false;
   $('tp-result').hidden = true;
   game.resize();
@@ -1155,6 +1276,7 @@ if (new URLSearchParams(location.search).has('debug')) {
 }
 
 syncInputs();
+renderPrefs();
 useSynth();
 renderStats();
 renderProps();

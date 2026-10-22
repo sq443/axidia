@@ -33,6 +33,7 @@
     <main>
       <div class="timeline-wrap" id="timeline-wrap">
         <canvas id="timeline"></canvas>
+        <canvas id="overview" title="曲全体：クリック / ドラッグでその位置へ移動"></canvas>
         <div class="drop-hint" id="drop-hint">音源ファイル / 譜面JSON をドロップ</div>
       </div>
 
@@ -43,6 +44,11 @@
           <div class="buttons">
             <button id="load-audio">音源を読み込む</button>
             <button id="use-synth">テスト楽曲の音</button>
+          </div>
+          <div class="props-row volume">
+            <span>音量</span>
+            <input type="range" id="volume" min="0" max="100" step="1">
+            <output id="volume-value">100%</output>
           </div>
         </section>
 
@@ -124,6 +130,10 @@
       <button id="zoom-out" title="ズームアウト (−)">−</button>
       <span class="zoom-label">ZOOM</span>
       <button id="zoom-in" title="ズームイン (+)">＋</button>
+      <span class="zoom-label" title="テストプレイのノーツスピード">SPEED</span>
+      <button id="speed-down" title="ノーツを遅く">−</button>
+      <span class="speed" id="speed">3.0</span>
+      <button id="speed-up" title="ノーツを速く">＋</button>
       <button id="testplay" class="accent" title="カーソル位置からテストプレイ (T)　Shift+T で最初から">テストプレイ</button>
     </footer>
   </div>

@@ -27,7 +27,19 @@ export function contextTimeFor(ctx, perf) {
 export class Music {
   constructor() {
     this.source = null;
+    this.gain = null;
     this.zero = 0; // context time of the track's position 0
+    this.vol = 1;
+  }
+
+  // 0..1; applies to what is playing too.
+  get volume() {
+    return this.vol;
+  }
+
+  set volume(v) {
+    this.vol = v;
+    if (this.gain) this.gain.gain.value = v;
   }
 
   // Play `buffer` so that track position `pos` (s) is heard at performance time `perf` (ms).
@@ -45,7 +57,9 @@ export class Music {
     if (offset >= buffer.duration) return;
     const src = ctx.createBufferSource();
     src.buffer = buffer;
-    src.connect(ctx.destination);
+    this.gain = ctx.createGain();
+    this.gain.gain.value = this.vol;
+    src.connect(this.gain).connect(ctx.destination);
     src.start(when, offset);
     this.source = src;
   }
@@ -67,7 +81,9 @@ export class Music {
       // already stopped
     }
     this.source.disconnect();
+    this.gain?.disconnect();
     this.source = null;
+    this.gain = null;
   }
 }
 
