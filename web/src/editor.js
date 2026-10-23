@@ -5,7 +5,7 @@ import { normalizeChart } from './songs.js';
 import { generateChart } from './chart.js';
 import { Music, trackFor, click } from './music.js';
 import * as sfx from './sfx.js';
-import { blockZoom } from './touch.js';
+import { blockZoom, isIOS, isStandalone } from './touch.js';
 
 const $ = (id) => document.getElementById(id);
 const DRAFT_KEY = 'axidia.editor.draft';
@@ -1416,9 +1416,16 @@ $('mirror').addEventListener('click', mirrorSelection);
 // Standard API, with the webkit-prefixed one older iPadOS has.
 const fullscreenElement = () => document.fullscreenElement ?? document.webkitFullscreenElement ?? null;
 
+// Safari's element full screen on iOS / iPadOS is not used: it takes rapid taps for typing on a
+// fake keyboard (an anti-phishing check), warns "you seem to be typing in full screen" and drops
+// out of full screen mid-play. A Home Screen web app has no address bar and no such check.
+const IOS_FULLSCREEN_TIP = 'iPhone / iPad は「共有 → ホーム画面に追加」から開くと、アドレスバーなしの全画面で使えます';
+$('fullscreen').hidden = isStandalone();
+
 function toggleFullscreen() {
   const el = document.documentElement;
   if (fullscreenElement()) (document.exitFullscreen ?? document.webkitExitFullscreen)?.call(document);
+  else if (isIOS) toast(IOS_FULLSCREEN_TIP, 5000);
   else if (el.requestFullscreen) el.requestFullscreen().catch(() => toast('全画面にできませんでした'));
   else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
   else toast('この端末のブラウザは全画面に対応していません（ホーム画面に追加すると全画面で開けます）');
@@ -1538,12 +1545,12 @@ function updateTransport() {
 }
 
 let toastTimer = 0;
-function toast(text) {
+function toast(text, ms = 1800) {
   const el = $('toast');
   el.textContent = text;
   el.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (el.hidden = true), 1800);
+  toastTimer = setTimeout(() => (el.hidden = true), ms);
 }
 
 window.addEventListener('resize', () => $('tp').hidden && layout());

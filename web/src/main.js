@@ -3,7 +3,7 @@ import { DIFFS, SONGS, loadChart, loadMusic } from './songs.js';
 import { Music } from './music.js';
 import { Calibrator } from './calibrate.js';
 import * as sfx from './sfx.js';
-import { blockZoom } from './touch.js';
+import { blockZoom, isIOS } from './touch.js';
 
 const STORAGE_KEY = 'axidia.v1';
 const SPEED_MIN = 1;
@@ -281,7 +281,8 @@ blockZoom(true); // the game never wants pinch / double-tap zoom
 // orientation; elsewhere (iOS Safari) the CSS overlay asks the player to rotate.
 async function lockLandscape() {
   try {
-    if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+    // not on iOS / iPadOS: there Safari ends full screen mid-play, taking rapid taps for typing
+    if (!isIOS && !document.fullscreenElement && document.documentElement.requestFullscreen) {
       await document.documentElement.requestFullscreen({ navigationUI: 'hide' });
     }
     await screen.orientation?.lock?.('landscape');

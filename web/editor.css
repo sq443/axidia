@@ -496,6 +496,9 @@ main {
   background: var(--fg);
   color: var(--bg);
   font-size: 12px;
+  width: max-content;
+  max-width: calc(100vw - 32px);
+  text-align: center;
 }
 
 [hidden] {
