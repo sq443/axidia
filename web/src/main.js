@@ -3,6 +3,7 @@ import { DIFFS, SONGS, loadChart, loadMusic } from './songs.js';
 import { Music } from './music.js';
 import { Calibrator } from './calibrate.js';
 import * as sfx from './sfx.js';
+import { blockZoom } from './touch.js';
 
 const STORAGE_KEY = 'axidia.v1';
 const SPEED_MIN = 1;
@@ -258,6 +259,7 @@ function pause() {
 }
 $('pause-btn').addEventListener('click', pause);
 $('resume').addEventListener('click', () => {
+  sfx.unlock(); // a fresh context if the page was away (iOS)
   show(null);
   game.resume();
   // Restart the music where it stopped, timed to the end of the countdown.
@@ -266,7 +268,12 @@ $('resume').addEventListener('click', () => {
 function pauseIfPlaying() {
   if (game.running) pause();
 }
-document.addEventListener('visibilitychange', () => document.hidden && pauseIfPlaying());
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) pauseIfPlaying();
+  else sfx.refreshAudio(); // iOS may silence the old AudioContext while away
+});
+document.addEventListener('fullscreenchange', sfx.refreshAudio);
+blockZoom(true); // the game never wants pinch / double-tap zoom
 
 // ---- orientation ----
 

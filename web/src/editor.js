@@ -5,6 +5,7 @@ import { normalizeChart } from './songs.js';
 import { generateChart } from './chart.js';
 import { Music, trackFor, click } from './music.js';
 import * as sfx from './sfx.js';
+import { blockZoom } from './touch.js';
 
 const $ = (id) => document.getElementById(id);
 const DRAFT_KEY = 'axidia.editor.draft';
@@ -1097,6 +1098,7 @@ let audio = null; // AudioBuffer of the loaded song, or null for the test song's
 let audioLabel = '';
 
 async function loadAudioFile(file) {
+  stopPlay(); // unlock() may swap the context the playback runs on
   sfx.unlock();
   const ac = sfx.audio();
   try {
@@ -1305,9 +1307,19 @@ const game = new Game($('tp-stage'), { onEnd: showTestResult });
 const music = new Music();
 music.volume = prefs.volume;
 
+// During test play the page must not zoom: user-scalable=no (which also snaps an existing zoom
+// back) plus cancelling pinch / double-tap gestures. Editing keeps normal zoom.
+const viewport = document.querySelector('meta[name=viewport]');
+const editViewport = viewport.content;
+function lockZoom(on) {
+  viewport.content = on ? `${editViewport}, maximum-scale=1, user-scalable=no` : editViewport;
+  blockZoom(on);
+}
+
 async function testPlay(fromStart) {
   stopPlay();
   sfx.unlock();
+  lockZoom(true);
   const chart = normalizeChart(exportJSON());
   const from = fromStart ? 0 : Math.max(0, msOf(snapBeat(view.beat)));
   chart.notes = chart.notes.filter((n) => n.time >= from - 1);
@@ -1339,6 +1351,7 @@ let lastTestFromStart = false;
 function exitTestPlay() {
   game.stop();
   music.stop();
+  lockZoom(false);
   $('tp').hidden = true;
   layout();
 }
@@ -1400,13 +1413,26 @@ $('mirror').addEventListener('click', mirrorSelection);
 
 // ---- full screen (no address bar) ----
 
+// Standard API, with the webkit-prefixed one older iPadOS has.
+const fullscreenElement = () => document.fullscreenElement ?? document.webkitFullscreenElement ?? null;
+
 function toggleFullscreen() {
-  if (document.fullscreenElement) document.exitFullscreen();
-  else document.documentElement.requestFullscreen?.().catch(() => toast('全画面にできませんでした'));
+  const el = document.documentElement;
+  if (fullscreenElement()) (document.exitFullscreen ?? document.webkitExitFullscreen)?.call(document);
+  else if (el.requestFullscreen) el.requestFullscreen().catch(() => toast('全画面にできませんでした'));
+  else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+  else toast('この端末のブラウザは全画面に対応していません（ホーム画面に追加すると全画面で開けます）');
 }
 $('fullscreen').addEventListener('click', toggleFullscreen);
-document.addEventListener('fullscreenchange', () => {
-  $('fullscreen').textContent = document.fullscreenElement ? '全画面を終了' : '全画面';
+for (const type of ['fullscreenchange', 'webkitfullscreenchange']) {
+  document.addEventListener(type, () => {
+    $('fullscreen').textContent = fullscreenElement() ? '全画面を終了' : '全画面';
+    sfx.refreshAudio(); // iOS may silence the old AudioContext across the switch
+  });
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) stopPlay();
+  else sfx.refreshAudio();
 });
 $('redo').addEventListener('click', redo);
 

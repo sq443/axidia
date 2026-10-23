@@ -1,15 +1,34 @@
-// Tiny synthesized tap sound via Web Audio (no audio files).
+// Tiny synthesized tap sound via Web Audio (no audio files), and the shared AudioContext.
 let ctx = null;
 let enabled = true;
+let stale = false;
 
 // Must be called from a user gesture (iOS requires it to unlock audio).
 export function unlock() {
+  if (ctx && stale) {
+    // iOS can leave a context silent (while it still reports "running") after full screen or
+    // app switches; a fresh one plays. Buffers are context-independent, so nothing is lost.
+    ctx.close?.().catch(() => {});
+    ctx = null;
+  }
+  stale = false;
   if (!ctx) {
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return;
     ctx = new AC({ latencyHint: 'interactive' });
   }
-  if (ctx.state === 'suspended') ctx.resume();
+  // Safari 16.4+: play as media, so the silent switch doesn't mute the game.
+  try {
+    if (navigator.audioSession) navigator.audioSession.type = 'playback';
+  } catch {
+    // not supported
+  }
+  if (ctx.state !== 'running') ctx.resume?.().catch(() => {}); // "suspended" or iOS's "interrupted"
+}
+
+// The page went full screen / came back to the foreground: start the next unlock() on a new context.
+export function refreshAudio() {
+  if (ctx) stale = true;
 }
 
 // The shared AudioContext (null until unlock()).
