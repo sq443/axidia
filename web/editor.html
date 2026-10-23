@@ -32,7 +32,8 @@
       <button id="save" class="accent" title="JSONで保存 (Ctrl+S)">保存</button>
       <button id="fullscreen" title="アドレスバーなしの全画面 (F)">全画面</button>
       <input type="file" id="file-json" accept=".json,application/json" hidden>
-      <input type="file" id="file-audio" accept="audio/*" hidden>
+      <!-- extensions spelled out: iOS Safari mishandles accept="audio/*" (it filters for video) -->
+      <input type="file" id="file-audio" accept=".mp3,.m4a,.aac,.wav,.aif,.aiff,.caf,.flac,.ogg,.oga,.opus,.webm,audio/mpeg,audio/mp4,audio/x-m4a,audio/aac,audio/wav,audio/x-wav,audio/aiff,audio/flac,audio/ogg,audio/webm" hidden>
     </header>
 
     <main>

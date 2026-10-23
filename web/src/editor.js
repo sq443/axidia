@@ -1098,9 +1098,10 @@ let audioLabel = '';
 
 async function loadAudioFile(file) {
   sfx.unlock();
+  const ac = sfx.audio();
   try {
-    const data = await file.arrayBuffer();
-    const buf = await new Promise((resolve, reject) => sfx.audio().decodeAudioData(data, resolve, reject));
+    if (!ac) throw new Error('Web Audio を使えません');
+    const buf = await sfx.decode(ac, await sfx.readBytes(file));
     audio = buf;
     audioLabel = `${file.name}（${formatTime(buf.duration * 1000)}）`;
     peaks = computePeaks(buf);
@@ -1109,12 +1110,20 @@ async function loadAudioFile(file) {
       syncInputs();
     }
     toast('音源を読み込みました');
-  } catch {
+  } catch (e) {
+    // say what failed, so a report from a device we can't test on tells us why
+    const kind = file.type || file.name.split('.').pop() || '不明';
+    const why = e?.name && e.name !== 'Error' ? e.name : e?.message || '不明なエラー';
     toast('音源を読み込めませんでした');
+    $('audio-name').textContent = `読み込めませんでした：${file.name}（${kind} / ${formatSize(file.size)} / ${why}）。mp3・m4a・wav を推奨します`;
+    changed();
+    return;
   }
   $('audio-name').textContent = audioLabel;
   changed();
 }
+
+const formatSize = (bytes) => (bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)}MB` : `${Math.round(bytes / 1024)}KB`);
 
 function useSynth() {
   audio = null;
@@ -1401,7 +1410,8 @@ document.addEventListener('fullscreenchange', () => {
 });
 $('redo').addEventListener('click', redo);
 
-// drag & drop: audio files load as the song, JSON as the chart
+// drag & drop: audio files load as the song, JSON as the chart (some browsers leave file.type empty)
+const AUDIO_EXT = /\.(mp3|m4a|aac|wav|aiff?|caf|flac|ogg|oga|opus|webm)$/i;
 const wrap = $('timeline-wrap');
 wrap.addEventListener('dragover', (e) => {
   e.preventDefault();
@@ -1412,7 +1422,7 @@ wrap.addEventListener('drop', (e) => {
   e.preventDefault();
   wrap.classList.remove('dropping');
   for (const f of e.dataTransfer.files) {
-    if (f.type.startsWith('audio/')) loadAudioFile(f);
+    if (f.type.startsWith('audio/') || AUDIO_EXT.test(f.name)) loadAudioFile(f);
     else if (f.name.endsWith('.json')) openFile(f);
   }
 });

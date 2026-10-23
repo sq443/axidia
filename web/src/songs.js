@@ -12,6 +12,7 @@
 //   hold / slide ends likewise take `end` (ms) or `endBeat`. Other fields are as in chart.js.
 import { generateChart } from './chart.js';
 import { trackFor } from './music.js';
+import { decode as decodeWith } from './sfx.js';
 
 export const DIFFS = ['EASY', 'NORMAL', 'HARD'];
 
@@ -60,8 +61,7 @@ export function loadMusic(song, chart) {
 
 function decode(data) {
   const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
-  const ctx = new OAC(1, 1, 44100);
-  return new Promise((resolve, reject) => ctx.decodeAudioData(data, resolve, reject));
+  return decodeWith(new OAC(1, 1, 44100), data);
 }
 
 // Chart JSON → the chart object the game plays (times in ms). Also used by the chart editor.

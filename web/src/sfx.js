@@ -17,6 +17,28 @@ export function audio() {
   return ctx;
 }
 
+// Decode an encoded audio file (ArrayBuffer) on `context`. Uses the callback form, which older
+// Safari needs, and hands it a copy (decoding detaches the buffer). Some Safari versions call
+// the error callback with null, so a plain error stands in for it.
+export function decode(context, data) {
+  return new Promise((resolve, reject) => {
+    const fail = (e) => reject(e ?? new Error('decode failed'));
+    const p = context.decodeAudioData(data.slice(0), resolve, fail);
+    p?.catch?.(() => {}); // the failure also comes through the callback
+  });
+}
+
+// A File / Blob's bytes (Blob.arrayBuffer is missing before iOS 14).
+export function readBytes(file) {
+  if (file.arrayBuffer) return file.arrayBuffer();
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+    r.readAsArrayBuffer(file);
+  });
+}
+
 export function setEnabled(value) {
   enabled = value;
 }
