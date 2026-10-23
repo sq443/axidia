@@ -1,0 +1,14 @@
+{
+  "id": "./editor.html",
+  "name": "AXIDIA Chart Editor",
+  "short_name": "AXIDIA Editor",
+  "start_url": "./editor.html",
+  "scope": "./",
+  "display": "fullscreen",
+  "display_override": ["fullscreen", "standalone"],
+  "background_color": "#0b0b0c",
+  "theme_color": "#0b0b0c",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

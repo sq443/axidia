@@ -411,9 +411,21 @@ main {
   color: var(--dim);
 }
 
-.transport .speed {
-  min-width: 28px;
+.props-row .val {
+  min-width: 56px;
   text-align: center;
+  font-size: 12px;
+}
+
+.edit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.edit-actions button {
+  padding: 5px 8px;
+  font-size: 11px;
 }
 
 .zoom-label {

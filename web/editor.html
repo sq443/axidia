@@ -4,7 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#0b0b0c">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>AXIDIA Chart Editor</title>
+  <link rel="manifest" href="editor.webmanifest">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="editor.css">
 </head>
@@ -26,6 +30,7 @@
       <button id="open">開く</button>
       <button id="sample" title="テスト楽曲の譜面を読み込む">サンプル</button>
       <button id="save" class="accent" title="JSONで保存 (Ctrl+S)">保存</button>
+      <button id="fullscreen" title="アドレスバーなしの全画面 (F)">全画面</button>
       <input type="file" id="file-json" accept=".json,application/json" hidden>
       <input type="file" id="file-audio" accept="audio/*" hidden>
     </header>
@@ -94,10 +99,37 @@
             <button data-tool="flick"><i class="t-flick"></i><b>FLICK</b><kbd>4</kbd></button>
             <button data-tool="slide"><i class="t-slide"></i><b>SLIDE</b><kbd>5</kbd></button>
           </div>
+          <div class="edit-actions">
+            <button id="select-all" title="すべて選択 (Ctrl+A)">全選択</button>
+            <button id="copy" title="コピー (Ctrl+C)">コピー</button>
+            <button id="cut" title="切り取り (Ctrl+X)">切り取り</button>
+            <button id="paste" title="再生位置に貼り付け (Ctrl+V)">貼り付け</button>
+            <button id="mirror" title="選択中のノーツを左右反転 (M)">左右反転</button>
+          </div>
           <p class="tip">
             クリックで配置、ドラッグで長さ（HOLD/SLIDE）や連続配置（DRAG）。ノーツをドラッグで移動、上端をドラッグで長さ変更。右クリックで削除。<br>
+            選択ツールで空いている所をドラッグすると範囲選択、Shift+クリックで追加・解除（Shift+ドラッグはどのツールでも範囲選択）。選択中のノーツはまとめてドラッグで移動。貼り付けは赤い線の位置に。<br>
             ホイールでスクロール、Ctrl+ホイールでズーム、左端の小節番号の列はドラッグでもスクロール。
           </p>
+        </section>
+
+        <section>
+          <h3>テストプレイ</h3>
+          <div class="props-row">
+            <span>SPEED</span>
+            <button id="speed-down" title="ノーツを遅く">−</button>
+            <output class="val" id="speed">3.0</output>
+            <button id="speed-up" title="ノーツを速く">＋</button>
+          </div>
+          <div class="props-row">
+            <span>OFFSET</span>
+            <button data-tpoffset="-5" title="−5ms">−</button>
+            <output class="val" id="tp-offset">0ms</output>
+            <button data-tpoffset="5" title="+5ms">＋</button>
+          </div>
+          <label class="check"><input type="checkbox" id="tp-sfx"> タップ音（SE）</label>
+          <label class="check"><input type="checkbox" id="auto"> オート（全ノーツを自動で PERFECT）</label>
+          <p class="tip">この OFFSET は端末の音ズレ補正で、テストプレイ専用です（タイミング欄の OFFSET ＝曲の0拍目の位置とは別）。初期値はゲームの設定から。</p>
         </section>
 
         <section id="props">
@@ -130,11 +162,6 @@
       <button id="zoom-out" title="ズームアウト (−)">−</button>
       <span class="zoom-label">ZOOM</span>
       <button id="zoom-in" title="ズームイン (+)">＋</button>
-      <span class="zoom-label" title="テストプレイのノーツスピード">SPEED</span>
-      <button id="speed-down" title="ノーツを遅く">−</button>
-      <span class="speed" id="speed">3.0</span>
-      <button id="speed-up" title="ノーツを速く">＋</button>
-      <label class="check" title="すべてのノーツを自動で PERFECT で取る"><input type="checkbox" id="auto"> オート</label>
       <button id="testplay" class="accent" title="カーソル位置からテストプレイ (T)　Shift+T で最初から">テストプレイ</button>
     </footer>
   </div>

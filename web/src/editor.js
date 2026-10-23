@@ -9,6 +9,7 @@ import * as sfx from './sfx.js';
 const $ = (id) => document.getElementById(id);
 const DRAFT_KEY = 'axidia.editor.draft';
 const PREFS_KEY = 'axidia.editor.prefs';
+const CLIP_KEY = 'axidia.editor.clipboard';
 const GAME_KEY = 'axidia.v1';
 const NOTE_W = 0.11; // as in the game
 const ANCHORS = ['TL', 'TC', 'TR', 'ML', 'MC', 'MR', 'BL', 'BC', 'BR'];
@@ -88,7 +89,7 @@ function importJSON(json) {
 function setDoc(d) {
   doc = d;
   doc.notes.forEach((n) => (n.id = nextId++));
-  selected = null;
+  selection = new Set();
   undoStack.length = redoStack.length = 0;
   view.beat = 0;
   syncInputs();
@@ -113,7 +114,8 @@ function restore(from, to) {
   to.push(snapshot());
   const s = JSON.parse(from.pop());
   Object.assign(doc, s);
-  selected = doc.notes.find((n) => n.id === selected?.id) ?? null;
+  const ids = new Set([...selection].map((n) => n.id));
+  selection = new Set(doc.notes.filter((n) => ids.has(n.id)));
   syncInputs();
   changed();
 }
@@ -123,8 +125,12 @@ const redo = () => restore(redoStack, undoStack);
 
 // ---- editor preferences (music volume, test play speed) ----
 
-const prefs = { volume: 1, speed: null, auto: false, ...readJSON(PREFS_KEY) };
-prefs.speed ??= readJSON(GAME_KEY).speed ?? 3; // start from the game's speed
+// Test play settings start from the game's own; testOffset is device latency compensation, not the
+// chart's OFFSET (where beat 0 is in the audio).
+const prefs = { volume: 1, speed: null, auto: false, testSfx: null, testOffset: null, ...readJSON(PREFS_KEY) };
+prefs.speed ??= readJSON(GAME_KEY).speed ?? 3;
+prefs.testSfx ??= readJSON(GAME_KEY).sfx ?? true;
+prefs.testOffset ??= readJSON(GAME_KEY).offset ?? 0;
 
 function readJSON(key) {
   try {
@@ -147,7 +153,8 @@ function savePrefs() {
 const DIFFS = ['EASY', 'NORMAL', 'HARD'];
 const SNAPS = [1, 2, 3, 4, 6, 8, 12, 16];
 const view = { beat: 0, pxPerBeat: 90, snap: 4, xsnap: true, tool: 'tap' };
-let selected = null;
+let selection = new Set(); // selected notes
+const only = () => (selection.size === 1 ? [...selection][0] : null);
 
 const canvas = $('timeline');
 const ctx = canvas.getContext('2d');
@@ -270,6 +277,17 @@ function render() {
 
   // hover ghost
   if (hover && !drag && view.tool !== 'select') drawGhost();
+
+  // selection box
+  if (drag?.kind === 'box' && drag.moved) {
+    const x = Math.min(drag.start.px, drag.end.px);
+    const y = Math.min(drag.start.py, drag.end.py);
+    ctx.fillStyle = 'rgba(124,245,255,0.08)';
+    ctx.fillRect(x, y, Math.abs(drag.end.px - drag.start.px), Math.abs(drag.end.py - drag.start.py));
+    ctx.strokeStyle = 'rgba(124,245,255,0.6)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, y + 0.5, Math.abs(drag.end.px - drag.start.px), Math.abs(drag.end.py - drag.start.py));
+  }
 
   // headers
   ctx.fillStyle = 'rgba(11,11,12,0.85)';
@@ -401,7 +419,7 @@ function diamond(cx, cy, r) {
 function drawNote(n, ghost = false) {
   const y = yOf(n.beat);
   ctx.globalAlpha = ghost ? 0.35 : 1;
-  const sel = n === selected;
+  const sel = selection.has(n);
   if (n.type === 'flick') {
     const c = cols.flick;
     diamond(c.x + c.w / 2, y, 10);
@@ -437,7 +455,7 @@ function drawSlideNote(n, ghost = false) {
   const c = cols.slide;
   const y = yOf(n.beat);
   const ye = yOf(n.endBeat);
-  const sel = n === selected;
+  const sel = selection.has(n);
   ctx.globalAlpha = ghost ? 0.35 : 1;
   // where the slide's guide is on screen in the game (SLIDE_LEAD_BEATS before it starts)
   const yg = yOf(n.beat - SLIDE_LEAD_BEATS);
@@ -560,17 +578,107 @@ function addNote(n) {
   return n;
 }
 
-function removeNote(n) {
+function removeNotes(list) {
+  if (!list.length) return;
   remember();
-  doc.notes = doc.notes.filter((m) => m !== n);
-  if (selected === n) selected = null;
+  const gone = new Set(list);
+  doc.notes = doc.notes.filter((m) => !gone.has(m));
+  for (const n of list) selection.delete(n);
   changed();
 }
 
-function select(n) {
-  selected = n;
+// Select just `n` (or nothing); with toggle, add / remove it from the selection.
+function select(n, { toggle = false } = {}) {
+  if (!n) selection = new Set();
+  else if (toggle) selection.has(n) ? selection.delete(n) : selection.add(n);
+  else selection = new Set([n]);
   renderProps();
   draw();
+}
+
+function selectMany(list) {
+  selection = new Set(list);
+  renderProps();
+  draw();
+}
+
+// Where a note sits on the timeline, for box selection.
+function notePoint(n) {
+  const y = yOf(n.beat);
+  if (n.type === 'flick') return { x: cols.flick.x + cols.flick.w / 2, y };
+  if (n.type === 'slide') return { x: cols.slide.x + cols.slide.w / 2, y };
+  const c = cols[n.side];
+  return { x: c.x + n.x * c.w, y };
+}
+
+function notesInBox(a, b) {
+  const [x0, x1] = [Math.min(a.px, b.px), Math.max(a.px, b.px)];
+  const [y0, y1] = [Math.min(a.py, b.py), Math.max(a.py, b.py)];
+  return doc.notes.filter((n) => {
+    const p = notePoint(n);
+    return p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1;
+  });
+}
+
+// ---- copy / paste / mirror ----
+
+let clipboard = null;
+
+function copySelection(cut = false) {
+  if (!selection.size) return toast('ノーツを選択してください');
+  const list = [...selection];
+  const base = Math.min(...list.map((n) => n.beat));
+  clipboard = list.map((n) => {
+    const c = structuredClone(strip(n));
+    c.beat -= base;
+    if (c.endBeat !== undefined) c.endBeat -= base;
+    return c;
+  });
+  try {
+    localStorage.setItem(CLIP_KEY, JSON.stringify(clipboard)); // survives a reload / another tab
+  } catch {
+    // memory only
+  }
+  if (cut) removeNotes(list);
+  toast(`${list.length} 個を${cut ? '切り取り' : 'コピー'}しました`);
+}
+
+// Paste at the playhead (snapped); the pasted notes become the selection.
+function paste() {
+  const stored = readJSON(CLIP_KEY);
+  const clip = clipboard ?? (Array.isArray(stored) ? stored : null);
+  if (!clip?.length) return toast('コピーしたノーツがありません');
+  remember();
+  const base = Math.max(0, snapBeat(view.beat));
+  const added = clip.map((c) => {
+    const n = structuredClone(c);
+    n.beat += base;
+    if (n.endBeat !== undefined) n.endBeat += base;
+    return addNote(n);
+  });
+  selectMany(added);
+  changed();
+  toast(`${added.length} 個を貼り付けました（${formatBeat(base)}）`);
+}
+
+const MIRROR_COL = { L: 'R', C: 'C', R: 'L' };
+const flipBend = (b) => (b === 'L' ? 'R' : b === 'R' ? 'L' : null);
+
+// Left-right mirror of the selection: x for line notes; slides mirror their path and arcs
+// (flicks sit in the center and stay).
+function mirrorSelection() {
+  if (!selection.size) return toast('ノーツを選択してください');
+  remember();
+  for (const n of selection) {
+    if (n.side === 'top' || n.side === 'bottom') n.x = round(1 - n.x, 3);
+    if (n.type === 'slide') {
+      n.path = n.path.map((a) => a[0] + MIRROR_COL[a[1]]);
+      n.bends = n.bends.map(flipBend);
+      rememberPath(n);
+    }
+  }
+  changed();
+  toast(`${selection.size} 個を左右反転しました`);
 }
 
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -580,11 +688,28 @@ canvas.addEventListener('pointerdown', (e) => {
   const at = locate(e);
   const hit = noteAt(at.px, at.py);
   if (e.button === 2) {
-    if (hit) removeNote(hit.note);
+    if (hit) removeNotes([hit.note]);
     return;
   }
-  if (at.col === 'ruler' || at.col === null) {
+  const boxing = view.tool === 'select' || e.shiftKey;
+  if (at.col === 'ruler' || (at.col === null && !boxing)) {
     drag = { kind: 'scroll', y: at.py, beat: view.beat, moved: false };
+    return;
+  }
+  if (hit && e.shiftKey) {
+    select(hit.note, { toggle: true });
+    return;
+  }
+  if (hit && hit.part === 'body' && selection.has(hit.note) && selection.size > 1) {
+    // drag any selected note to move the whole selection
+    remember();
+    drag = {
+      kind: 'group',
+      note: hit.note,
+      start: at,
+      orig: new Map([...selection].map((m) => [m, { beat: m.beat, endBeat: m.endBeat, x: m.x }])),
+      moved: false,
+    };
     return;
   }
   if (hit) {
@@ -598,6 +723,13 @@ canvas.addEventListener('pointerdown', (e) => {
       orig: { beat: n.beat, endBeat: n.endBeat, x: n.x, side: n.side },
       moved: false,
     };
+    return;
+  }
+
+  if (boxing) {
+    // box selection (Shift adds to what's selected); it may start between columns too
+    drag = { kind: 'box', start: at, end: at, base: e.shiftKey ? new Set(selection) : new Set(), moved: false };
+    if (!e.shiftKey) select(null);
     return;
   }
 
@@ -638,6 +770,30 @@ canvas.addEventListener('pointermove', (e) => {
   if (drag.kind === 'scroll') {
     if (Math.abs(at.py - drag.y) > 3) drag.moved = true;
     if (drag.moved && !playing) setViewBeat(drag.beat + (at.py - drag.y) / view.pxPerBeat);
+    return;
+  }
+  if (drag.kind === 'box') {
+    drag.end = at;
+    if (Math.abs(at.px - drag.start.px) > 3 || Math.abs(at.py - drag.start.py) > 3) drag.moved = true;
+    if (drag.moved) selectMany([...drag.base, ...notesInBox(drag.start, at)]);
+    return;
+  }
+  if (drag.kind === 'group') {
+    if (!drag.moved && Math.abs(at.py - drag.start.py) < 3 && Math.abs(at.px - drag.start.px) < 3) return;
+    drag.moved = true;
+    const origs = [...drag.orig.values()];
+    const dBeat = Math.max(
+      snapBeat(at.beat) - snapBeat(drag.start.beat),
+      -Math.min(...origs.map((o) => o.beat)), // keep everything at beat 0 or later
+    );
+    const raw = (at.px - drag.start.px) / cols.top.w;
+    const dx = view.xsnap ? Math.round(raw * 20) / 20 : raw;
+    for (const [m, o] of drag.orig) {
+      m.beat = o.beat + dBeat;
+      if (o.endBeat !== undefined) m.endBeat = o.endBeat + dBeat;
+      if (m.side === 'top' || m.side === 'bottom') m.x = round(Math.min(0.95, Math.max(0.05, o.x + dx)), 3);
+    }
+    changed(false);
     return;
   }
   if (drag.kind === 'paint') {
@@ -686,7 +842,10 @@ canvas.addEventListener('pointermove', (e) => {
 canvas.addEventListener('pointerup', (e) => {
   const at = locate(e);
   if (drag?.kind === 'scroll' && !drag.moved && !playing) setViewBeat(snapBeat(at.beat)); // click on the ruler: move the cursor
-  if ((drag?.kind === 'move' || drag?.kind === 'resize') && !drag.moved) undoStack.pop(); // a click only selected
+  if ((drag?.kind === 'move' || drag?.kind === 'resize' || drag?.kind === 'group') && !drag.moved) {
+    undoStack.pop(); // a click only selected
+    if (drag.kind === 'group') select(drag.note); // clicking one of several selected picks just it
+  }
   drag = null;
   changed();
 });
@@ -742,7 +901,8 @@ function arcAllowed(a, b) {
 
 function renderProps() {
   const body = $('props-body');
-  const n = selected;
+  if (selection.size > 1) return renderMultiProps(body);
+  const n = only();
   if (!n || !doc.notes.includes(n)) {
     body.innerHTML = '<p class="tip">ノーツを選ぶと、ここで細かく編集できます。</p>';
     return;
@@ -779,7 +939,8 @@ function renderProps() {
     }).join('')}</div>`);
     rows.push('<p class="tip">円弧にできるのは斜め隣（90°）か、2マス離れた点同士（半円）だけです。</p>');
   }
-  rows.push('<div class="buttons"><button id="p-delete">削除 (Del)</button></div>');
+  rows.push(`<div class="buttons"><button id="p-copy">コピー</button><button id="p-mirror">左右反転</button>
+    <button id="p-delete">削除 (Del)</button></div>`);
   body.innerHTML = rows.join('');
 
   const edit = (fn) => {
@@ -841,7 +1002,25 @@ function renderProps() {
       });
     });
   }
-  body.querySelector('#p-delete')?.addEventListener('click', () => removeNote(n));
+  body.querySelector('#p-copy').addEventListener('click', () => copySelection());
+  body.querySelector('#p-mirror').addEventListener('click', mirrorSelection);
+  body.querySelector('#p-delete').addEventListener('click', () => removeNotes([n]));
+}
+
+function renderMultiProps(body) {
+  const count = {};
+  for (const n of selection) count[n.type] = (count[n.type] ?? 0) + 1;
+  const beats = [...selection].map((n) => n.beat);
+  body.innerHTML = `<div class="props-row"><span>選択</span><b>${selection.size} 個</b></div>
+    <p class="tip">${Object.entries(count).map(([k, v]) => `${k.toUpperCase()} ${v}`).join(' · ')}<br>
+    ${formatBeat(Math.min(...beats))} 〜 ${formatBeat(Math.max(...beats))}</p>
+    <div class="buttons"><button id="p-copy">コピー</button><button id="p-cut">切り取り</button>
+    <button id="p-mirror">左右反転</button><button id="p-delete">削除 (Del)</button></div>
+    <p class="tip">選択中のどれかをドラッグすると、まとめて移動できます。</p>`;
+  body.querySelector('#p-copy').addEventListener('click', () => copySelection());
+  body.querySelector('#p-cut').addEventListener('click', () => copySelection(true));
+  body.querySelector('#p-mirror').addEventListener('click', mirrorSelection);
+  body.querySelector('#p-delete').addEventListener('click', () => removeNotes([...selection]));
 }
 
 // New slides start with the shape of the last one edited.
@@ -1065,6 +1244,20 @@ function renderPrefs() {
   $('volume-value').textContent = `${Math.round(prefs.volume * 100)}%`;
   $('speed').textContent = prefs.speed.toFixed(1);
   $('auto').checked = prefs.auto;
+  $('tp-sfx').checked = prefs.testSfx;
+  $('tp-offset').textContent = `${prefs.testOffset > 0 ? '+' : ''}${prefs.testOffset}ms`;
+}
+
+$('tp-sfx').addEventListener('change', (e) => {
+  prefs.testSfx = e.target.checked;
+  savePrefs();
+});
+for (const b of document.querySelectorAll('[data-tpoffset]')) {
+  b.addEventListener('click', () => {
+    prefs.testOffset = Math.max(-500, Math.min(500, prefs.testOffset + Number(b.dataset.tpoffset)));
+    renderPrefs();
+    savePrefs();
+  });
 }
 
 $('auto').addEventListener('change', (e) => {
@@ -1111,8 +1304,9 @@ async function testPlay(fromStart) {
   chart.notes = chart.notes.filter((n) => n.time >= from - 1);
   if (!chart.notes.length) return toast('この位置より後にノーツがありません');
   const track = await currentTrack();
-  const { offset = 0 } = readJSON(GAME_KEY);
+  const offset = prefs.testOffset;
   const speed = prefs.speed;
+  sfx.setEnabled(prefs.testSfx);
   $('tp').hidden = false;
   $('tp-result').hidden = true;
   game.resize();
@@ -1189,6 +1383,22 @@ $('sample').addEventListener('click', () => {
   useSynth();
 });
 $('undo').addEventListener('click', undo);
+$('select-all').addEventListener('click', () => selectMany(doc.notes));
+$('copy').addEventListener('click', () => copySelection());
+$('cut').addEventListener('click', () => copySelection(true));
+$('paste').addEventListener('click', paste);
+$('mirror').addEventListener('click', mirrorSelection);
+
+// ---- full screen (no address bar) ----
+
+function toggleFullscreen() {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen?.().catch(() => toast('全画面にできませんでした'));
+}
+$('fullscreen').addEventListener('click', toggleFullscreen);
+document.addEventListener('fullscreenchange', () => {
+  $('fullscreen').textContent = document.fullscreenElement ? '全画面を終了' : '全画面';
+});
 $('redo').addEventListener('click', redo);
 
 // drag & drop: audio files load as the song, JSON as the chart
@@ -1227,13 +1437,29 @@ window.addEventListener('keydown', (e) => {
   } else if (mod && e.key.toLowerCase() === 's') {
     e.preventDefault();
     saveFile();
+  } else if (mod && e.key.toLowerCase() === 'a') {
+    e.preventDefault();
+    selectMany(doc.notes);
+  } else if (mod && e.key.toLowerCase() === 'c') {
+    e.preventDefault();
+    copySelection();
+  } else if (mod && e.key.toLowerCase() === 'x') {
+    e.preventDefault();
+    copySelection(true);
+  } else if (mod && e.key.toLowerCase() === 'v') {
+    e.preventDefault();
+    paste();
   } else if (mod) {
     return;
   } else if (e.key === ' ') {
     e.preventDefault();
     play();
   } else if (e.key === 'Delete' || e.key === 'Backspace') {
-    if (selected) removeNote(selected);
+    removeNotes([...selection]);
+  } else if (e.key.toLowerCase() === 'm') {
+    mirrorSelection();
+  } else if (e.key.toLowerCase() === 'f') {
+    toggleFullscreen();
   } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
     e.preventDefault();
     const step = (e.shiftKey ? 4 : 1 / view.snap) * (e.key === 'ArrowUp' ? 1 : -1);
