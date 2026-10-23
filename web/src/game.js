@@ -20,13 +20,13 @@ const HOLD_SLACK = 0.07; // looser tolerance for keeping a hold
 const RELEASE_GRACE = 150; // ms before a hold's end where letting go still counts
 const FLICK_MOVE = 4; // px a touching finger must move in one event to count as a flick
 const FLICK_REACH = 2.5; // the finger must be within this many flick-diamond sizes of the center
-const SLIDE_REACH = 100; // px from a slide's start / end point that a finger may be (at most)
+const SLIDE_REACH = 120; // px from a slide's start / end point that a finger may be (at most)
 const SLIDE_REACH_SHARE = 0.6; // ...and at most this share of the slide's length (keeps short slides' ends apart)
 export const SLIDE_LEAD_BEATS = 2; // the slide's guide appears this many beats before it starts
 const SLIDE_DEMO_BEATS = 2; // the demo dot shown with the guide traces this many beats of the slide
 const SLIDE_END = { PERFECT: 250, GREAT: 400 }; // ms, ± around a slide's end time
 const MID_SPACING = 70; // px between a slide's invisible midpoints (at least 2 per slide)
-const MID_REACH = 50; // px a finger must pass within to clear a midpoint
+const MID_REACH = 60; // px a finger must pass within to clear a midpoint
 // Judgment lines, fraction of screen height. Notes for the bottom line fall from the top edge;
 // notes for the top line rise from the bottom edge. Touches in each half of the screen play that half's line.
 const LINE_Y = { top: 0.2, bottom: 0.8 };
@@ -708,7 +708,7 @@ export class Game {
     const k = Math.min(1, Math.max(0, (sl.time - t) / (beat * SLIDE_LEAD_BEATS)));
     ctx.strokeStyle = NOTE_COLOR.slide;
     ctx.lineWidth = 3;
-    circle(ctx, a.x, a.y, 20 + 44 * k);
+    circle(ctx, a.x, a.y, 20 + 76 * k); // 96px when the guide appears
     ctx.stroke();
     ctx.fillStyle = NOTE_COLOR.slide;
     circle(ctx, a.x, a.y, 16);
