@@ -1,6 +1,6 @@
 // AXIDIA chart editor. Charts are edited in beats (so BPM / OFFSET changes keep notes on the grid)
 // and saved as the chart JSON that songs.js loads.
-import { Game, makeSeg, SLIDE_LEAD_BEATS } from './game.js';
+import { Game, makeSeg, SLIDE_LEAD_BEATS, DECOR_DEFAULT, DECOR_PROPS, decorState, strokeDecor } from './game.js';
 import { normalizeChart } from './songs.js';
 import { generateChart } from './chart.js';
 import { Music, trackFor, click } from './music.js';
@@ -14,7 +14,7 @@ const CLIP_KEY = 'axidia.editor.clipboard';
 const GAME_KEY = 'axidia.v1';
 const NOTE_W = 0.11; // as in the game
 const ANCHORS = ['TL', 'TC', 'TR', 'ML', 'MC', 'MR', 'BL', 'BC', 'BR'];
-const COLOR = { tap: '#f2f2f2', hold: '#f2f2f2', drag: '#ffd84d', flick: '#f2f2f2', slide: '#b9a4ff' };
+const COLOR = { tap: '#f2f2f2', hold: '#f2f2f2', drag: '#ffd84d', flick: '#f2f2f2', slide: '#b9a4ff', decor: '#9aa0a6' };
 const SELECT = '#7cf5ff';
 const PEAK_MS = 5; // waveform resolution
 const HISTORY = 200;
@@ -52,11 +52,25 @@ function saveDraft() {
 }
 
 const strip = ({ id, ...n }) => n;
+
+// Decoration diamonds live in doc.notes as { type: 'decor', beat, endBeat, keys }: each key has
+// `t`, beats after the first key (so moving / copying the item moves its keys), plus DECOR_PROPS.
+// beat / endBeat are the first / last key. The chart JSON keeps them apart, in `decor`.
+const isDecor = (n) => n.type === 'decor';
+const keyBeat = (n, k) => n.beat + k.t;
+
+// Set the keys' absolute beats (in key order), keeping beat / endBeat / t in step.
+function setKeyBeats(n, beats) {
+  n.beat = beats[0];
+  n.keys.forEach((k, i) => (k.t = round(beats[i] - beats[0], 6)));
+  n.endBeat = n.beat + n.keys[n.keys.length - 1].t;
+}
 const round = (v, d = 4) => Math.round(v * 10 ** d) / 10 ** d;
 
 // The chart JSON that songs.js loads.
 function exportJSON() {
-  const notes = [...doc.notes]
+  const notes = doc.notes
+    .filter((n) => !isDecor(n))
     .sort((a, b) => a.beat - b.beat)
     .map((n) => {
       const out = { type: n.type, beat: round(n.beat) };
@@ -65,8 +79,15 @@ function exportJSON() {
       if (n.type === 'slide') Object.assign(out, { path: n.path, bends: n.bends });
       return out;
     });
+  const decor = doc.notes.filter(isDecor).map((n) => ({
+    keys: n.keys.map((k) => {
+      const out = { beat: round(keyBeat(n, k)) };
+      for (const p of DECOR_PROPS) out[p] = round(k[p], 3);
+      return out;
+    }),
+  }));
   const { title, artist, difficulty, bpm, offset } = doc;
-  return { title, artist, difficulty, bpm, offset, notes };
+  return { title, artist, difficulty, bpm, offset, notes, ...(decor.length ? { decor } : {}) };
 }
 
 // Chart JSON (beats or ms) → document.
@@ -82,6 +103,13 @@ function importJSON(json) {
     if (n.type === 'slide') Object.assign(note, { path: n.path, bends: n.bends ?? n.path.slice(1).map(() => null) });
     return note;
   });
+  for (const dec of json.decor ?? []) {
+    const keys = (dec.keys ?? []).map((k) => ({ ...DECOR_DEFAULT, ...k, beat: toBeat(k.time, k.beat) })).sort((a, b) => a.beat - b.beat);
+    if (!keys.length) continue;
+    const n = { type: 'decor', keys: keys.map(({ beat, time, ...k }) => ({ ...k, t: 0 })) };
+    setKeyBeats(n, keys.map((k) => k.beat));
+    d.notes.push(n);
+  }
   const last = d.notes.reduce((m, n) => Math.max(m, n.endBeat ?? n.beat), 0);
   d.bars = Math.max(4, Math.ceil((last + 1) / 4));
   return d;
@@ -178,14 +206,15 @@ function layout() {
   const ruler = 96;
   const flick = 56;
   const slide = 150;
-  const field = Math.max(120, Math.min(380, (W - ruler - flick - slide - gap * 5) / 2));
+  const decor = 96;
+  const field = Math.max(110, Math.min(380, (W - ruler - flick - slide - decor - gap * 6) / 2));
   let x = 0;
   const col = (w) => {
     const c = { x, w };
     x += w + gap;
     return c;
   };
-  cols = { ruler: col(ruler), top: col(field), bottom: col(field), flick: col(flick), slide: col(slide) };
+  cols = { ruler: col(ruler), top: col(field), bottom: col(field), flick: col(flick), slide: col(slide), decor: col(decor) };
   playY = H - 90;
   const ov = $('overview');
   OW = ov.clientWidth;
@@ -230,7 +259,7 @@ function render() {
   const b1 = beatAt(0);
 
   // column backgrounds
-  for (const name of ['top', 'bottom', 'flick', 'slide']) {
+  for (const name of ['top', 'bottom', 'flick', 'slide', 'decor']) {
     const c = cols[name];
     ctx.fillStyle = 'rgba(255,255,255,0.025)';
     ctx.fillRect(c.x, 0, c.w, H);
@@ -274,7 +303,9 @@ function render() {
   // notes
   const visible = (n) => (n.endBeat ?? n.beat) >= b0 - 1 && n.beat <= b1 + 1;
   for (const n of doc.notes) if (visible(n) && n.type === 'slide') drawSlideNote(n);
-  for (const n of doc.notes) if (visible(n) && n.type !== 'slide') drawNote(n);
+  for (const n of doc.notes) if (visible(n) && n.type !== 'slide' && !isDecor(n)) drawNote(n);
+  const lanes = decorLanes();
+  for (const n of doc.notes) if (visible(n) && isDecor(n)) drawDecorItem(n, lanes);
 
   // hover ghost
   if (hover && !drag && view.tool !== 'select') drawGhost();
@@ -297,7 +328,7 @@ function render() {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillStyle = '#8a8a8e';
-  const label = { ruler: 'BAR / WAVE', top: 'TOP LINE', bottom: 'BOTTOM LINE', flick: 'FLICK', slide: 'SLIDE' };
+  const label = { ruler: 'BAR / WAVE', top: 'TOP LINE', bottom: 'BOTTOM LINE', flick: 'FLICK', slide: 'SLIDE', decor: 'DECOR' };
   for (const [name, c] of Object.entries(cols)) ctx.fillText(label[name], c.x + c.w / 2, 12);
 
   // playhead
@@ -308,6 +339,7 @@ function render() {
   ctx.font = '500 11px system-ui, sans-serif';
   ctx.fillText(formatBeat(view.beat), W - 6, playY - 4);
   drawOverview(b0, b1);
+  drawPreview();
   updateTransport();
 }
 
@@ -338,6 +370,11 @@ function drawOverview(b0, b1) {
   // notes: TOP / BOTTOM line notes on the left / middle, flicks and slides on the right
   const laneX = { top: 5, bottom: 16, center: 28, free: 28 };
   for (const n of doc.notes) {
+    if (isDecor(n)) {
+      c.fillStyle = 'rgba(154,160,166,0.5)';
+      c.fillRect(35, ovY(n.endBeat), 2, Math.max(1, ovY(n.beat) - ovY(n.endBeat)));
+      continue;
+    }
     const side = n.type === 'flick' ? 'center' : n.type === 'slide' ? 'free' : n.side;
     const y = ovY(n.beat);
     c.fillStyle = COLOR[n.type];
@@ -511,6 +548,47 @@ function drawPathIcon(path, bends, cx, cy, size, sel) {
   ctx.fill();
 }
 
+// Decorations share the DECOR column in sub-lanes, so ones that overlap in time sit side by side.
+function decorLanes() {
+  const items = doc.notes.filter(isDecor).sort((a, b) => a.beat - b.beat || a.id - b.id);
+  const ends = [];
+  const lane = new Map();
+  for (const n of items) {
+    let i = ends.findIndex((e) => e < n.beat - 1e-9);
+    if (i < 0) i = ends.length;
+    ends[i] = n.endBeat;
+    lane.set(n, i);
+  }
+  const c = cols.decor;
+  const w = Math.min(24, (c.w - 8) / Math.max(1, ends.length));
+  return { x: (n) => c.x + 4 + w * ((lane.get(n) ?? 0) + 0.5), w };
+}
+
+function drawDecorItem(n, lanes, ghost = false) {
+  const cx = lanes.x(n);
+  const sel = selection.has(n);
+  ctx.globalAlpha = ghost ? 0.35 : 1;
+  const y = yOf(n.beat);
+  const ye = yOf(n.endBeat);
+  ctx.fillStyle = sel ? 'rgba(124,245,255,0.4)' : 'rgba(154,160,166,0.35)';
+  ctx.fillRect(cx - 1.5, ye, 3, y - ye);
+  n.keys.forEach((k, i) => {
+    const ky = yOf(keyBeat(n, k));
+    diamond(cx, ky, 6);
+    const current = sel && only() === n && i === decorKey;
+    ctx.fillStyle = '#0b0b0c';
+    ctx.fill();
+    if (current) {
+      ctx.fillStyle = SELECT;
+      ctx.fill();
+    }
+    ctx.strokeStyle = sel ? SELECT : '#d0d3d6';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  });
+  ctx.globalAlpha = 1;
+}
+
 let hover = null; // { col, beat, x }
 function drawGhost() {
   const { col, beat, x } = hover;
@@ -522,7 +600,18 @@ function drawGhost() {
     drawNote({ type: 'flick', beat: b }, true);
   } else if (t === 'slide' && col === 'slide') {
     drawSlideNote({ type: 'slide', beat: b, endBeat: b + 1, path: lastPath, bends: lastBends }, true);
+  } else if (t === 'decor' && col === 'decor') {
+    const g = newDecor(b);
+    const lanes = decorLanes();
+    drawDecorItem(g, { x: () => cols.decor.x + cols.decor.w - lanes.w / 2 - 4, w: lanes.w }, true);
   }
+}
+
+// A new decoration: two keys DECOR_BEATS apart, both at the last-used look.
+const DECOR_BEATS = 4;
+let lastDecor = { ...DECOR_DEFAULT };
+function newDecor(beat, len = DECOR_BEATS) {
+  return { type: 'decor', beat, endBeat: beat + len, keys: [{ t: 0, ...lastDecor }, { t: len, ...lastDecor }] };
 }
 
 // ---- hit testing ----
@@ -531,9 +620,15 @@ function drawGhost() {
 function noteAt(px, py) {
   const col = colAt(px);
   let best = null;
+  const lanes = col === 'decor' ? decorLanes() : null;
   for (const n of doc.notes) {
     const y = yOf(n.beat);
-    if (n.type === 'slide') {
+    if (isDecor(n)) {
+      if (col !== 'decor' || Math.abs(px - lanes.x(n)) > lanes.w / 2 + 3) continue;
+      const i = n.keys.findIndex((k) => Math.abs(py - yOf(keyBeat(n, k))) <= 7);
+      if (i >= 0) return { note: n, part: 'key', key: i };
+      if (py <= y && py >= yOf(n.endBeat)) best = { note: n, part: 'body' };
+    } else if (n.type === 'slide') {
       if (col !== 'slide') continue;
       const ye = yOf(n.endBeat);
       if (Math.abs(py - ye) <= 6) return { note: n, part: 'end' };
@@ -589,10 +684,14 @@ function removeNotes(list) {
 }
 
 // Select just `n` (or nothing); with toggle, add / remove it from the selection.
+let decorKey = 0; // the key being edited of the selected decoration
+
 function select(n, { toggle = false } = {}) {
+  const before = only();
   if (!n) selection = new Set();
   else if (toggle) selection.has(n) ? selection.delete(n) : selection.add(n);
   else selection = new Set([n]);
+  if (only() !== before) decorKey = 0;
   renderProps();
   draw();
 }
@@ -608,6 +707,7 @@ function notePoint(n) {
   const y = yOf(n.beat);
   if (n.type === 'flick') return { x: cols.flick.x + cols.flick.w / 2, y };
   if (n.type === 'slide') return { x: cols.slide.x + cols.slide.w / 2, y };
+  if (isDecor(n)) return { x: decorLanes().x(n), y };
   const c = cols[n.side];
   return { x: c.x + n.x * c.w, y };
 }
@@ -672,6 +772,12 @@ function mirrorSelection() {
   remember();
   for (const n of selection) {
     if (n.side === 'top' || n.side === 'bottom') n.x = round(1 - n.x, 3);
+    if (isDecor(n)) {
+      for (const k of n.keys) {
+        k.x = round(1 - k.x, 3);
+        k.rotation = -k.rotation || 0;
+      }
+    }
     if (n.type === 'slide') {
       n.path = n.path.map((a) => a[0] + MIRROR_COL[a[1]]);
       n.bends = n.bends.map(flipBend);
@@ -713,6 +819,15 @@ canvas.addEventListener('pointerdown', (e) => {
     };
     return;
   }
+  if (hit?.part === 'key') {
+    select(hit.note);
+    decorKey = hit.key;
+    renderProps();
+    remember();
+    const n = hit.note;
+    drag = { kind: 'key', note: n, index: hit.key, start: at, orig: n.keys.map((k) => keyBeat(n, k)), moved: false };
+    return;
+  }
   if (hit) {
     select(hit.note);
     remember();
@@ -745,7 +860,7 @@ canvas.addEventListener('pointerdown', (e) => {
   else if (t === 'flick' && at.col === 'flick') created = addNote({ type: 'flick', beat });
   else if (t === 'slide' && at.col === 'slide') {
     created = addNote({ type: 'slide', beat, endBeat: beat + 1, path: [...lastPath], bends: [...lastBends] });
-  }
+  } else if (t === 'decor' && at.col === 'decor') created = addNote(newDecor(beat));
   if (!created) {
     undoStack.pop(); // nothing changed
     select(null);
@@ -754,7 +869,7 @@ canvas.addEventListener('pointerdown', (e) => {
   }
   select(created);
   changed();
-  if (t === 'hold' || t === 'slide') drag = { kind: 'resize', note: created, start: at, orig: { endBeat: created.endBeat }, moved: true };
+  if (t === 'hold' || t === 'slide' || t === 'decor') drag = { kind: 'resize', note: created, start: at, orig: { endBeat: created.endBeat }, moved: true };
   else if (t === 'drag') drag = { kind: 'paint', side: at.col, last: beat };
   else drag = null;
 });
@@ -817,8 +932,30 @@ canvas.addEventListener('pointermove', (e) => {
   }
   const n = drag.note;
   const dBeat = snapBeat(at.beat) - snapBeat(drag.start.beat);
+  if (drag.kind === 'key') {
+    // a decoration key slides between its neighbors (it may meet them: a jump)
+    if (!drag.moved && Math.abs(at.py - drag.start.py) < 3) return;
+    drag.moved = true;
+    const o = drag.orig;
+    const i = drag.index;
+    const beats = [...o];
+    beats[i] = Math.min(o[i + 1] ?? Infinity, Math.max(o[i - 1] ?? 0, o[i] + dBeat));
+    setKeyBeats(n, beats);
+    changed(false);
+    return;
+  }
   if (drag.kind === 'resize') {
     const min = 1 / view.snap;
+    if (isDecor(n)) {
+      // a new decoration: drag sets where its last key goes
+      const end = Math.max(n.beat + min, snapBeat(at.beat));
+      if (end !== n.endBeat) {
+        n.keys[n.keys.length - 1].t = end - n.beat;
+        n.endBeat = end;
+        changed(false);
+      }
+      return;
+    }
     const end = Math.max(n.beat + min, snapBeat(at.beat));
     if (end !== n.endBeat) {
       n.endBeat = end;
@@ -843,7 +980,7 @@ canvas.addEventListener('pointermove', (e) => {
 canvas.addEventListener('pointerup', (e) => {
   const at = locate(e);
   if (drag?.kind === 'scroll' && !drag.moved && !playing) setViewBeat(snapBeat(at.beat)); // click on the ruler: move the cursor
-  if ((drag?.kind === 'move' || drag?.kind === 'resize' || drag?.kind === 'group') && !drag.moved) {
+  if ((drag?.kind === 'move' || drag?.kind === 'resize' || drag?.kind === 'group' || drag?.kind === 'key') && !drag.moved) {
     undoStack.pop(); // a click only selected
     if (drag.kind === 'group') select(drag.note); // clicking one of several selected picks just it
   }
@@ -908,6 +1045,7 @@ function renderProps() {
     body.innerHTML = '<p class="tip">ノーツを選ぶと、ここで細かく編集できます。</p>';
     return;
   }
+  if (isDecor(n)) return renderDecorProps(body, n);
   const rows = [];
   rows.push(`<div class="props-row"><span>種類</span><b>${n.type.toUpperCase()}</b></div>`);
   rows.push(`<div class="props-row"><span>拍</span><input type="number" id="p-beat" step="${1 / view.snap}" value="${round(n.beat)}"><small>${formatBeat(n.beat)}</small></div>`);
@@ -1008,6 +1146,218 @@ function renderProps() {
   body.querySelector('#p-delete').addEventListener('click', () => removeNotes([n]));
 }
 
+// ---- decoration properties: one key at a time, with the screen preview ----
+
+const DECOR_FIELDS = [
+  { p: 'x', label: '横位置', min: -0.5, max: 1.5, step: 0.01 },
+  { p: 'y', label: '縦位置', min: -0.5, max: 1.5, step: 0.01 },
+  { p: 'size', label: '大きさ', min: 0, max: 1.5, step: 0.01 },
+  { p: 'rotation', label: '回転 (°)', min: -360, max: 360, step: 1 },
+  { p: 'opacity', label: '不透明度', min: 0, max: 1, step: 0.01 },
+];
+
+function renderDecorProps(body, n) {
+  decorKey = Math.min(decorKey, n.keys.length - 1);
+  const k = n.keys[decorKey];
+  const kb = keyBeat(n, k);
+  const rows = [];
+  rows.push('<div class="props-row"><span>種類</span><b>DECOR（ひし形）</b></div>');
+  rows.push(`<div class="props-row"><span>キー</span><div class="seg keys">${n.keys
+    .map((_, i) => `<button data-key="${i}" aria-pressed="${i === decorKey}">${i + 1}</button>`)
+    .join('')}</div></div>`);
+  rows.push(`<div class="props-row"><span>拍</span><input type="number" id="d-beat" step="${1 / view.snap}" value="${round(kb)}"><small>${formatBeat(kb)}</small></div>`);
+  for (const f of DECOR_FIELDS) {
+    rows.push(`<div class="props-row"><span>${f.label}</span>
+      <input type="range" data-dr="${f.p}" min="${f.min}" max="${f.max}" step="${f.step}" value="${k[f.p]}">
+      <input type="number" data-dn="${f.p}" step="${f.step}" value="${round(k[f.p], 3)}"></div>`);
+  }
+  rows.push('<canvas id="decor-preview" class="decor-preview" title="ドラッグで位置を動かす"></canvas>');
+  rows.push(`<p class="tip" id="decor-preview-label"></p>`);
+  rows.push(`<div class="buttons"><button id="d-add" title="赤い線の位置にキーを足す（その時点の状態で）">キーを追加</button>
+    <button id="d-remove">このキーを削除</button></div>`);
+  rows.push(`<div class="buttons"><button id="p-copy">コピー</button><button id="p-mirror">左右反転</button>
+    <button id="p-delete">削除 (Del)</button></div>`);
+  rows.push('<p class="tip">キーとキーの間は直線的に変化します。DECOR 列の◇（キー）を上下にドラッグでタイミングを移動、同じ拍に2つ重ねると瞬間的に切り替わります。プレビューはこのキーの拍の画面で、ドラッグで位置を動かせます。</p>');
+  body.innerHTML = rows.join('');
+
+  const edit = (fn) => {
+    remember();
+    fn();
+    changed();
+  };
+  const keep = () => (lastDecor = Object.fromEntries(DECOR_PROPS.map((p) => [p, k[p]])));
+  for (const b of body.querySelectorAll('[data-key]')) {
+    b.addEventListener('click', () => {
+      decorKey = Number(b.dataset.key);
+      renderProps();
+      draw();
+    });
+  }
+  body.querySelector('#d-beat').addEventListener('change', (e) => {
+    const beats = n.keys.map((q) => keyBeat(n, q));
+    const v = Math.max(beats[decorKey - 1] ?? 0, Math.min(beats[decorKey + 1] ?? Infinity, Number(e.target.value)));
+    if (!Number.isFinite(v)) return renderProps();
+    edit(() => {
+      beats[decorKey] = v;
+      setKeyBeats(n, beats);
+    });
+  });
+  let live = false; // a slider drag in progress: one undo step for the whole drag
+  for (const f of DECOR_FIELDS) {
+    const range = body.querySelector(`[data-dr="${f.p}"]`);
+    const num = body.querySelector(`[data-dn="${f.p}"]`);
+    range.addEventListener('input', () => {
+      if (!live) remember();
+      live = true;
+      k[f.p] = Number(range.value);
+      num.value = round(k[f.p], 3);
+      keep();
+      changed(false);
+    });
+    range.addEventListener('change', () => {
+      live = false;
+      changed();
+    });
+    num.addEventListener('change', () => {
+      const v = Number(num.value);
+      if (!Number.isFinite(v)) return renderProps();
+      edit(() => {
+        k[f.p] = f.p === 'opacity' ? Math.min(1, Math.max(0, v)) : f.p === 'size' ? Math.max(0, v) : v;
+        keep();
+      });
+    });
+  }
+  body.querySelector('#d-add').addEventListener('click', () => addDecorKey(n));
+  body.querySelector('#d-remove').addEventListener('click', () => {
+    if (n.keys.length <= 2) return toast('キーは2つ以上必要です');
+    edit(() => {
+      const beats = n.keys.map((q) => keyBeat(n, q));
+      n.keys.splice(decorKey, 1);
+      beats.splice(decorKey, 1);
+      setKeyBeats(n, beats);
+      decorKey = Math.max(0, decorKey - 1);
+    });
+  });
+  body.querySelector('#p-copy').addEventListener('click', () => copySelection());
+  body.querySelector('#p-mirror').addEventListener('click', mirrorSelection);
+  body.querySelector('#p-delete').addEventListener('click', () => removeNotes([n]));
+  bindPreview(n);
+}
+
+// A key at the playhead, with the look the decoration has there (before / after it: extends it).
+function addDecorKey(n) {
+  const beat = snapBeat(view.beat);
+  const beats = n.keys.map((k) => keyBeat(n, k));
+  const same = beats.findIndex((b) => Math.abs(b - beat) < 1e-6);
+  if (same >= 0) {
+    decorKey = same;
+    renderProps();
+    draw();
+    return toast('この拍にはもうキーがあります');
+  }
+  if (beat < 0) return;
+  remember();
+  const st = decorState(n.keys, beat, (k) => keyBeat(n, k)) ?? { ...(beat < n.beat ? n.keys[0] : n.keys[n.keys.length - 1]) };
+  const key = { t: 0 };
+  for (const p of DECOR_PROPS) key[p] = round(st[p], 3);
+  const i = beats.filter((b) => b < beat).length;
+  n.keys.splice(i, 0, key);
+  beats.splice(i, 0, beat);
+  setKeyBeats(n, beats);
+  decorKey = i;
+  changed();
+  toast(`キー ${i + 1} を追加しました（${formatBeat(beat)}）`);
+}
+
+// The preview: the play screen (a phone in landscape) at the edited key's beat — or, with no
+// decoration selected, at the playhead — with every decoration there. Dragging moves the key.
+const PREVIEW_ASPECT = 2.1;
+function previewField(w, h) {
+  const fieldW = Math.min(w - 16, h * 1.8);
+  return { x: (w - fieldW) / 2, w: fieldW, h };
+}
+
+function drawPreview() {
+  const cv = $('decor-preview');
+  if (!cv) return;
+  const n = only();
+  if (!n || !isDecor(n)) return;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = cv.clientWidth;
+  const h = Math.round(w / PREVIEW_ASPECT);
+  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
+    cv.width = Math.round(w * dpr);
+    cv.height = Math.round(h * dpr);
+    cv.style.height = `${h}px`;
+  }
+  const c = cv.getContext('2d');
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  c.fillStyle = '#0b0b0c';
+  c.fillRect(0, 0, w, h);
+  const field = previewField(w, h);
+  const beat = keyBeat(n, n.keys[Math.min(decorKey, n.keys.length - 1)]);
+  const scale = h / 400; // line width as on a ~400px tall phone screen
+  for (const d of doc.notes) {
+    if (!isDecor(d)) continue;
+    const st = d === n ? { ...n.keys[decorKey] } : decorState(d.keys, beat, (k) => keyBeat(d, k));
+    if (st) strokeDecor(c, st, field, Math.max(1, 2 * scale));
+  }
+  // the edited one, marked even when faint or off screen
+  const k = n.keys[decorKey];
+  c.fillStyle = SELECT;
+  c.beginPath();
+  c.arc(field.x + k.x * field.w, k.y * h, 3, 0, Math.PI * 2);
+  c.fill();
+  c.fillStyle = 'rgba(255,255,255,0.06)';
+  c.fillRect(field.x, 0, 1, h);
+  c.fillRect(field.x + field.w - 1, 0, 1, h);
+  c.fillStyle = 'rgba(242,242,242,0.6)';
+  c.fillRect(field.x, Math.round(h * 0.2), field.w, 1);
+  c.fillRect(field.x, Math.round(h * 0.8), field.w, 1);
+  const label = $('decor-preview-label');
+  if (label) label.textContent = `キー ${decorKey + 1} の画面（${formatBeat(beat)}）`;
+}
+
+function bindPreview(n) {
+  const cv = $('decor-preview');
+  let dragging = null;
+  const pos = (e) => {
+    const r = cv.getBoundingClientRect();
+    const f = previewField(r.width, r.height);
+    return { x: (e.clientX - r.left - f.x) / f.w, y: (e.clientY - r.top) / r.height };
+  };
+  cv.addEventListener('pointerdown', (e) => {
+    cv.setPointerCapture(e.pointerId);
+    const k = n.keys[decorKey];
+    const p = pos(e);
+    remember();
+    dragging = { k, dx: k.x - p.x, dy: k.y - p.y, near: Math.hypot((p.x - k.x) * 1.8, p.y - k.y) < 0.08 };
+    // a press away from the center moves it there; a press on it grabs it where it is
+    if (!dragging.near) Object.assign(dragging, { dx: 0, dy: 0 });
+    move(e);
+  });
+  const move = (e) => {
+    if (!dragging) return;
+    const p = pos(e);
+    dragging.k.x = round(p.x + dragging.dx, 3);
+    dragging.k.y = round(p.y + dragging.dy, 3);
+    for (const f of ['x', 'y']) {
+      const v = dragging.k[f];
+      const range = document.querySelector(`[data-dr="${f}"]`);
+      const num = document.querySelector(`[data-dn="${f}"]`);
+      if (range) range.value = v;
+      if (num) num.value = v;
+    }
+    changed(false);
+  };
+  cv.addEventListener('pointermove', move);
+  cv.addEventListener('pointerup', () => {
+    dragging = null;
+    changed();
+  });
+  drawPreview();
+}
+
 function renderMultiProps(body) {
   const count = {};
   for (const n of selection) count[n.type] = (count[n.type] ?? 0) + 1;
@@ -1032,11 +1382,14 @@ function rememberPath(n) {
 
 function renderStats() {
   const count = { tap: 0, hold: 0, drag: 0, flick: 0, slide: 0 };
-  for (const n of doc.notes) count[n.type]++;
-  const judgments = doc.notes.length + count.hold + count.slide; // holds and slides judge twice
+  let decor = 0;
+  for (const n of doc.notes) isDecor(n) ? decor++ : count[n.type]++;
+  const notes = doc.notes.length - decor;
+  const judgments = notes + count.hold + count.slide; // holds and slides judge twice
   $('stats').innerHTML = [
     ...Object.entries(count).map(([k, v]) => `<span>${k.toUpperCase()}</span><span>${v}</span>`),
     `<span>判定数（コンボ）</span><span>${judgments}</span>`,
+    `<span>DECOR（演出）</span><span>${decor}</span>`,
   ].join('');
 }
 
@@ -1235,6 +1588,7 @@ function scheduleTicks() {
   if ($('hitsound').checked) {
     const times = new Set();
     for (const n of doc.notes) {
+      if (isDecor(n)) continue;
       times.add(msOf(n.beat));
       if (n.endBeat !== undefined) times.add(msOf(n.endBeat));
     }
@@ -1462,7 +1816,7 @@ wrap.addEventListener('drop', (e) => {
 
 // ---- keyboard ----
 
-const TOOL_KEYS = { v: 'select', 1: 'tap', 2: 'hold', 3: 'drag', 4: 'flick', 5: 'slide' };
+const TOOL_KEYS = { v: 'select', 1: 'tap', 2: 'hold', 3: 'drag', 4: 'flick', 5: 'slide', 6: 'decor' };
 window.addEventListener('keydown', (e) => {
   if (!$('tp').hidden) {
     if (e.key === 'Escape') exitTestPlay();

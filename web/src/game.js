@@ -95,6 +95,7 @@ export class Game {
   // auto: play every note PERFECT by itself (the chart editor's auto mode).
   start(chart, { speed, offset = 0, sync = null, from = 0, auto = false }) {
     this.chart = chart;
+    this.decor = chart.decor ?? [];
     this.auto = auto;
     this.offset = offset;
     this.sync = sync;
@@ -565,6 +566,13 @@ export class Game {
     ctx.fillStyle = '#0b0b0c';
     ctx.fillRect(0, 0, w, h);
 
+    // decoration diamonds: behind everything, like a backdrop
+    const field = { x: fieldX, w: fieldW, h };
+    for (const d of this.decor) {
+      const st = decorState(d.keys, t);
+      if (st) strokeDecor(ctx, st, field);
+    }
+
     // field edges
     ctx.fillStyle = 'rgba(255,255,255,0.06)';
     ctx.fillRect(fieldX, 0, 1, h);
@@ -998,6 +1006,45 @@ function line(ctx, x1, y1, x2, y2) {
   ctx.moveTo(x1, y1);
   ctx.lineTo(x2, y2);
   ctx.stroke();
+}
+
+// ---- decoration diamonds ----
+// A decoration is an outlined diamond behind the notes, animated by keys: { x, y, size, rotation,
+// opacity } at given times, changing linearly from key to key; it exists from its first key to its
+// last. x is a fraction of the field width (0 = left edge), y of the screen height (0 = top), size
+// the half-diagonal as a fraction of the screen height, rotation in degrees, opacity 0..1.
+export const DECOR_DEFAULT = { x: 0.5, y: 0.5, size: 0.3, rotation: 0, opacity: 0.3 };
+export const DECOR_PROPS = Object.keys(DECOR_DEFAULT);
+
+// The state at time t (keys sorted by `at`), or null outside the first..last key. Two keys at the
+// same time make a jump.
+export function decorState(keys, t, at = (k) => k.time) {
+  if (!keys.length || t < at(keys[0]) || t > at(keys[keys.length - 1])) return null;
+  let i = 0;
+  while (i < keys.length - 2 && at(keys[i + 1]) <= t) i++;
+  const a = keys[i];
+  const b = keys[i + 1] ?? a;
+  const span = at(b) - at(a);
+  const k = span > 0 ? Math.min(1, (t - at(a)) / span) : 1;
+  const st = {};
+  for (const p of DECOR_PROPS) st[p] = (a[p] ?? DECOR_DEFAULT[p]) + ((b[p] ?? DECOR_DEFAULT[p]) - (a[p] ?? DECOR_DEFAULT[p])) * k;
+  return st;
+}
+
+// field: { x, w } of the play field and the screen height h, in px.
+export function strokeDecor(ctx, st, field, lineWidth = 2) {
+  const opacity = Math.min(1, Math.max(0, st.opacity));
+  if (opacity <= 0 || st.size <= 0) return;
+  ctx.save();
+  ctx.translate(field.x + st.x * field.w, st.y * field.h);
+  ctx.rotate((st.rotation * Math.PI) / 180);
+  ctx.globalAlpha = opacity;
+  ctx.strokeStyle = '#f2f2f2';
+  ctx.lineWidth = lineWidth;
+  ctx.lineJoin = 'miter';
+  diamond(ctx, 0, 0, st.size * field.h);
+  ctx.stroke();
+  ctx.restore();
 }
 
 function circle(ctx, cx, cy, r) {

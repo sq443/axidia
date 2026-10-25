@@ -77,6 +77,10 @@ export function normalizeChart(json) {
       return note;
     })
     .sort((a, b) => a.time - b.time || a.x - b.x);
+  // decoration diamonds (see game.js): keys in beats or ms, sorted by time
+  const decor = (json.decor ?? [])
+    .map((d) => ({ keys: d.keys.map(({ beat, ...k }) => ({ ...k, time: at(k.time, beat) })).sort((a, b) => a.time - b.time) }))
+    .filter((d) => d.keys.length);
   const last = notes.reduce((m, n) => Math.max(m, n.end ?? n.time), 0);
-  return { bpm: json.bpm, beatMs, notes, duration: json.duration ?? last + 1200 };
+  return { bpm: json.bpm, beatMs, notes, decor, duration: json.duration ?? last + 1200 };
 }

@@ -302,6 +302,34 @@ main {
   background: var(--slide);
 }
 
+.tools .t-decor {
+  width: 12px;
+  height: 12px;
+  border-radius: 0;
+  background: none;
+  border: 1px solid var(--dim);
+  transform: rotate(45deg);
+  margin: -2px 0 -1px;
+}
+
+.seg.keys {
+  flex-wrap: wrap;
+}
+
+.seg.keys button {
+  min-width: 30px;
+  padding: 3px 6px;
+}
+
+.decor-preview {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  touch-action: none;
+  cursor: move;
+}
+
 .props-row {
   display: flex;
   align-items: center;
