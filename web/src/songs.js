@@ -11,6 +11,8 @@
 //   Each note takes either `time` (ms from the start of the audio) or `beat` (beats after `offset` ms);
 //   hold / slide ends likewise take `end` (ms) or `endBeat`. Other fields are as in chart.js.
 //   Optional "bpms": [{ "beat": 64, "bpm": 180 }, …] changes the BPM from that beat on.
+//   Optional "scrolls": [{ "beat": 32, "speed": 2 }, …] changes the scroll speed from that beat on
+//   (1 normal, 2 twice as fast, 0 stopped, -1 backwards).
 import { tempoMap } from './tempo.js';
 import { generateChart } from './chart.js';
 import { trackFor } from './music.js';
@@ -87,6 +89,8 @@ export function normalizeChart(json) {
   const decor = (json.decor ?? [])
     .map((d) => ({ keys: d.keys.map(({ beat, ...k }) => ({ ...k, time: at(k.time, beat) })).sort((a, b) => a.time - b.time) }))
     .filter((d) => d.keys.length);
+  // scroll speed changes (see scroll.js), in beats or ms
+  const scroll = (json.scrolls ?? []).map((c) => ({ time: at(c.time, c.beat), speed: c.speed }));
   const last = notes.reduce((m, n) => Math.max(m, n.end ?? n.time), 0);
-  return { bpm: json.bpm, beatMs, notes, decor, duration: json.duration ?? last + 1200 };
+  return { bpm: json.bpm, beatMs, notes, decor, scroll, duration: json.duration ?? last + 1200 };
 }

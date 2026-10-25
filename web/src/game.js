@@ -1,4 +1,5 @@
 import * as sfx from './sfx.js';
+import { scrollMap, approachWindows } from './scroll.js';
 
 // Timing windows (ms, ± from the exact note time). Outside GREAT is MISS.
 export const WINDOW = { PERFECT: 45, GREAT: 135 };
@@ -33,6 +34,7 @@ const LINE_Y = { top: 0.2, bottom: 0.8 };
 const BASE_APPROACH = 3000; // ms from the screen edge to the line at speed 1.0
 const COUNTDOWN = 1500; // ms before play resumes after pause
 const EFFECT_MS = 420;
+const FADE_MS = 150; // a note that can't come in from the edge (scroll speed changes) fades in this fast
 
 export class Game {
   constructor(canvas, { onEnd }) {
@@ -73,6 +75,9 @@ export class Game {
     this.fieldW = Math.min(w - margin * 2, h * 1.8);
     this.fieldX = (w - this.fieldW) / 2;
     this.lineY = { top: Math.round(h * LINE_Y.top), bottom: Math.round(h * LINE_Y.bottom) };
+    // px from each line to the screen edge notes normally come from, and to the edge behind it
+    this.span = { top: h - this.lineY.top + NOTE_H * 2, bottom: this.lineY.bottom + NOTE_H * 2 };
+    this.backSpan = { top: this.lineY.top + NOTE_H * 2, bottom: h - this.lineY.bottom + NOTE_H * 2 };
     this.flickSize = Math.min(28, h * 0.07); // half-diagonal of the flick diamond
     // Slide anchors: a 3×3 grid. Rows are the top line, the middle and the bottom line; L/R are as
     // far apart as the two lines, so the corners form a square.
@@ -85,6 +90,7 @@ export class Game {
     for (const [row, y] of [['T', this.lineY.top], ['M', midY], ['B', this.lineY.bottom]]) {
       for (const [col, x] of [['L', cx - gap / 2], ['C', cx], ['R', cx + gap / 2]]) this.anchors[row + col] = { x, y };
     }
+    if (this.notes && this.approach) this.computeVisibility();
     if (this.running) this.draw(this.songTime(performance.now()), performance.now());
   }
 
@@ -96,6 +102,7 @@ export class Game {
   start(chart, { speed, offset = 0, sync = null, from = 0, auto = false }) {
     this.chart = chart;
     this.decor = chart.decor ?? [];
+    this.scroll = scrollMap(chart.scroll);
     this.auto = auto;
     this.offset = offset;
     this.sync = sync;
@@ -139,8 +146,11 @@ export class Game {
     this.effects = [];
     this.pointers.clear();
 
-    const first = this.notes.length ? this.notes[0].time : 0;
-    const lead = Math.max(1200, this.approach - (first - from) + 600);
+    this.computeVisibility();
+    // start with every note off screen (as far as scroll speed changes allow)
+    let firstSeen = this.notes.length ? this.notes[0].time - this.approach : 0;
+    for (const n of this.notes) if (n.vis) firstSeen = Math.min(firstSeen, n.vis.wins[0].from);
+    const lead = Math.min(8000, Math.max(1200, from - firstSeen + 600));
     this.startAt = performance.now() + lead + offset - from; // songTime = now - startAt, from `from - lead`
     this.paused = false;
     this.resumeAt = 0;
@@ -152,6 +162,41 @@ export class Game {
 
   stop() {
     this.running = false;
+  }
+
+  // When each line note / flick is on screen (scroll.js), and for each index the earliest any note
+  // from there on shows up, so drawing can stop early.
+  computeVisibility() {
+    const { approach } = this;
+    for (const n of this.notes) {
+      if (n.type === 'slide') continue;
+      const reach =
+        n.type === 'flick'
+          ? () => approach
+          : (sgn) => (sgn > 0 ? approach : (approach * this.backSpan[n.side]) / this.span[n.side]);
+      n.vis = approachWindows(this.scroll, n.time, reach);
+    }
+    this.seenFrom = new Float64Array(this.notes.length + 1).fill(Infinity);
+    for (let i = this.notes.length - 1; i >= 0; i--) {
+      const n = this.notes[i];
+      this.seenFrom[i] = Math.min(this.seenFrom[i + 1], n.vis ? n.vis.wins[0].from : Infinity);
+    }
+  }
+
+  // 0 (hidden) .. 1: how visible note n is at time t
+  shown(n, t) {
+    for (const w of n.vis.wins) {
+      if (t < w.from || t > w.to) continue;
+      if (!w.fade) return 1;
+      const ms = Math.min(FADE_MS, (n.time - w.from) * 0.6);
+      return ms > 0 ? Math.min(1, (t - w.from) / ms) : 1;
+    }
+    return 0;
+  }
+
+  // How far (pos units: ms at speed 1) a note due at `time` is from its line at time t.
+  dist(time, t) {
+    return this.scroll.pos(time) - this.scroll.pos(t);
   }
 
   pause() {
@@ -554,11 +599,15 @@ export class Game {
   // ---- rendering ----
 
   yAt(time, t, side) {
-    const k = (time - t) / this.approach;
+    return this.yOfDist(this.dist(time, t), side);
+  }
+
+  // Bottom-line notes come down from the top edge, top-line ones up from the bottom; a negative
+  // distance is past the line (where notes arriving in a backwards stretch come from).
+  yOfDist(d, side) {
+    const k = d / this.approach;
     const line = this.lineY[side];
-    return side === 'bottom'
-      ? line - k * (line + NOTE_H * 2)
-      : line + k * (this.h - line + NOTE_H * 2);
+    return side === 'bottom' ? line - k * this.span.bottom : line + k * this.span.top;
   }
 
   draw(t, now) {
@@ -589,16 +638,18 @@ export class Game {
     for (const sl of this.slides) {
       if (t >= sl.time - (sl.beatMs ?? this.chart.beatMs) * SLIDE_LEAD_BEATS && t <= sl.end + 250) this.drawSlide(sl, t);
     }
-    for (let i = this.head; i < this.notes.length; i++) {
+    for (let i = this.head; i < this.notes.length && this.seenFrom[i] <= t; i++) {
       const n = this.notes[i];
-      if (n.time - t > this.approach) break;
-      if (n.type === 'flick' && !n.judged) this.drawFlick(n, t);
+      if (n.type !== 'flick' || n.judged) continue;
+      const a = this.shown(n, t);
+      if (a > 0) this.drawFlick(n, t, a);
     }
 
-    // holds that broke: dim, keep moving away
+    // holds that broke: dim, keep moving away (scroll changes may bring them back for a while)
     this.fading = this.fading.filter((n) => {
+      if (t < n.end) return true;
       const y = this.yAt(n.end, t, n.side);
-      return y > -NOTE_H && y < h + NOTE_H;
+      return t < n.end + 4000 && y > -NOTE_H && y < h + NOTE_H;
     });
     for (const n of this.fading) this.drawHold(n, t, { alpha: 0.25 });
 
@@ -606,21 +657,24 @@ export class Game {
     for (const n of this.holding) this.drawHold(n, t, { held: true, now });
 
     // incoming line notes
-    for (let i = this.head; i < this.notes.length; i++) {
+    for (let i = this.head; i < this.notes.length && this.seenFrom[i] <= t; i++) {
       const n = this.notes[i];
-      if (n.time - t > this.approach) break;
       if (n.judged || n.type === 'flick' || n.type === 'slide') continue;
+      const a = this.shown(n, t);
+      if (a <= 0) continue;
       if (n.type === 'hold') {
-        this.drawHold(n, t, {});
+        this.drawHold(n, t, { alpha: a });
         continue;
       }
       const y = this.yAt(n.time, t, n.side);
       const cx = fieldX + n.x * fieldW;
       const nh = n.type === 'drag' ? DRAG_H : NOTE_H;
+      ctx.globalAlpha = a;
       this.glow(n);
       ctx.fillStyle = NOTE_COLOR[n.type];
       roundRect(ctx, cx - nw / 2, y - nh / 2, nw, nh, nh / 2);
       ctx.shadowBlur = 0;
+      ctx.globalAlpha = 1;
     }
 
     this.effects = this.effects.filter((ef) => now - ef.at < EFFECT_MS);
@@ -638,19 +692,21 @@ export class Game {
 
   // The flick diamond fades in at the center; a diamond guide zooms in from beyond the screen
   // edges and meets it exactly on time.
-  drawFlick(n, t) {
+  // Arriving in a backwards stretch of scroll, the guide grows out of the center instead.
+  drawFlick(n, t, shown = 1) {
     const { ctx, w, h } = this;
     const cx = w / 2;
     const cy = h / 2;
     const s = this.flickSize;
-    const k = Math.max(0, (n.time - t) / this.approach); // 1 → just appeared, 0 → now
-    const alpha = Math.min(1, (1 - k) / 0.5);
+    const back = n.vis.sgn < 0;
+    const k = Math.min(1, Math.max(0, (n.vis.sgn * this.dist(n.time, t)) / this.approach)); // 1 → just appeared, 0 → now
+    const alpha = Math.min(1, (1 - k) / 0.5) * shown;
 
     const far = w / 2 + h / 2 + 20; // a diamond this big has its edges outside the screen
     ctx.globalAlpha = alpha * 0.6;
     ctx.strokeStyle = '#f2f2f2';
     ctx.lineWidth = 1.5;
-    diamond(ctx, cx, cy, s + (far - s) * k);
+    diamond(ctx, cx, cy, back ? s * (1 - k) : s + (far - s) * k);
     ctx.stroke();
 
     ctx.globalAlpha = alpha;
@@ -748,10 +804,16 @@ export class Game {
     const headY = held ? line : this.yAt(n.time, t, n.side);
     const tailY = this.yAt(n.end, t, n.side);
     const bw = nw * 0.56;
+    // the body covers every position the rest of the hold passes through (with scroll speed
+    // changes it may fold back past its head or its tail)
+    const p = this.scroll.pos(t);
+    const [lo, hi] = this.scroll.range(held ? Math.max(t, n.time) : n.time, n.end).map((q) => this.yOfDist(q - p, n.side));
+    const top = Math.min(lo, hi, headY);
+    const bottom = Math.max(lo, hi, headY);
 
     ctx.globalAlpha = alpha;
     ctx.fillStyle = held ? 'rgba(242,242,242,0.42)' : 'rgba(242,242,242,0.22)';
-    ctx.fillRect(cx - bw / 2, Math.min(headY, tailY), bw, Math.abs(headY - tailY));
+    ctx.fillRect(cx - bw / 2, top, bw, bottom - top);
     ctx.fillStyle = 'rgba(242,242,242,0.8)';
     ctx.fillRect(cx - bw / 2, tailY - 1, bw, 2); // tail cap
     if (!held && alpha === 1) this.glow(n);

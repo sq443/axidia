@@ -533,10 +533,10 @@ main {
   display: none !important;
 }
 
-.bpm-change input[type="number"] {
+.change-row input[type="number"] {
   width: 72px;
 }
 
-.bpm-change button {
+.change-row button {
   padding: 3px 8px;
 }

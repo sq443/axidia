@@ -71,7 +71,7 @@
             <button data-nudge="1">+1</button>
             <button data-nudge="10">+10</button>
           </div>
-          <div class="bpm-changes" id="bpm-changes"></div>
+          <div class="changes" id="bpm-changes"></div>
           <button id="add-bpm" title="途中で BPM が変わる曲用：赤い線の位置から BPM を変える">＋ 赤い線の位置で BPM を変える</button>
           <div class="grid2">
             <label>長さ (小節)<input id="bars" type="number" min="1" max="999"></label>
@@ -90,6 +90,13 @@
           </div>
           <label class="check"><input type="checkbox" id="xsnap"> 横位置を 0.05 刻みにそろえる</label>
           <p class="tip">OFFSET は「0拍目が音源の何ms目か」。波形の山と小節線が重なるように BPM / OFFSET を合わせます。途中で BPM が変わる曲は、変わる位置に赤い線を合わせて「BPM を変える」を押し、そこからの BPM を入力します（オレンジの線）。テスト楽曲の音は最初の BPM のままなので、音源を読み込んで合わせてください。</p>
+        </section>
+
+        <section>
+          <h3>スクロール速度</h3>
+          <div class="changes" id="scroll-changes"></div>
+          <button id="add-scroll" title="赤い線の位置からノーツの流れる速さを変える">＋ 赤い線の位置でスクロール速度を変える</button>
+          <p class="tip">ノーツの流れる速さの倍率（判定のタイミングは変わりません）。1 が通常、2 で2倍速、0 で停止、マイナスで逆走（その区間に判定するノーツは判定ラインの反対側からやってきます）。タイムラインの右端の帯が色分け表示（緑＝速い、水色＝遅い、赤＝逆走）。</p>
         </section>
 
         <section>

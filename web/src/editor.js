@@ -23,7 +23,8 @@ const HISTORY = 200;
 // ---- document ----
 
 // bpms: BPM changes after beat 0, [{ beat, bpm }] sorted (doc.bpm holds from beat 0).
-const newDoc = () => ({ title: '', artist: '', difficulty: 'NORMAL', bpm: 140, bpms: [], offset: 0, bars: 32, notes: [] });
+// scrolls: scroll speed changes, [{ beat, speed }] sorted (speed 1 before the first).
+const newDoc = () => ({ title: '', artist: '', difficulty: 'NORMAL', bpm: 140, bpms: [], scrolls: [], offset: 0, bars: 32, notes: [] });
 let doc = loadDraft() ?? newDoc();
 let nextId = 1;
 doc.notes.forEach((n) => (n.id = nextId++));
@@ -102,7 +103,18 @@ function exportJSON() {
   }));
   const { title, artist, difficulty, bpm, offset } = doc;
   const bpms = doc.bpms.map((c) => ({ beat: round(c.beat), bpm: c.bpm }));
-  return { title, artist, difficulty, bpm, offset, ...(bpms.length ? { bpms } : {}), notes, ...(decor.length ? { decor } : {}) };
+  const scrolls = doc.scrolls.map((c) => ({ beat: round(c.beat), speed: c.speed }));
+  return {
+    title,
+    artist,
+    difficulty,
+    bpm,
+    offset,
+    ...(bpms.length ? { bpms } : {}),
+    ...(scrolls.length ? { scrolls } : {}),
+    notes,
+    ...(decor.length ? { decor } : {}),
+  };
 }
 
 // Chart JSON (beats or ms) → document.
@@ -112,6 +124,10 @@ function importJSON(json) {
   d.bpms = (json.bpms ?? []).filter((c) => c.beat > 0 && c.bpm > 0).map((c) => ({ beat: c.beat, bpm: c.bpm })).sort((a, b) => a.beat - b.beat);
   const map = tempoMap(d.bpm, d.bpms, d.offset);
   const toBeat = (ms, beat) => beat ?? map.beatOf(ms);
+  d.scrolls = (json.scrolls ?? [])
+    .map((c) => ({ beat: Math.max(0, toBeat(c.time, c.beat)), speed: c.speed }))
+    .filter((c) => Number.isFinite(c.beat) && Number.isFinite(c.speed))
+    .sort((a, b) => a.beat - b.beat);
   d.notes = (json.notes ?? []).map((n) => {
     const note = { type: n.type, beat: toBeat(n.time, n.beat) };
     if (n.type === 'tap' || n.type === 'hold' || n.type === 'drag') Object.assign(note, { side: n.side ?? 'bottom', x: n.x ?? 0.5 });
@@ -145,7 +161,8 @@ function setDoc(d) {
 
 const undoStack = [];
 const redoStack = [];
-const snapshot = () => JSON.stringify({ notes: doc.notes, bpm: doc.bpm, bpms: doc.bpms, offset: doc.offset, bars: doc.bars });
+const snapshot = () =>
+  JSON.stringify({ notes: doc.notes, bpm: doc.bpm, bpms: doc.bpms, scrolls: doc.scrolls, offset: doc.offset, bars: doc.bars });
 
 // Call before every change.
 function remember() {
@@ -328,6 +345,29 @@ function render() {
     ctx.fillStyle = '#ff9f43';
     ctx.fillText(`BPM ${round(sg.bpm, 2)}`, cols.ruler.x + cols.ruler.w - 2, y - 2);
   }
+
+  // scroll speed: a strip along the ruler wherever it isn't 1 (red: backwards), and each change
+  const strip = (v) => (v < 0 ? '#ff5d6c' : v > 1 ? '#5be37d' : '#7cf5ff');
+  doc.scrolls.forEach((c, i) => {
+    const next = doc.scrolls[i + 1]?.beat ?? Infinity;
+    if (next < b0 - 1 || c.beat > b1 + 1) return;
+    const y = Math.round(yOf(c.beat)) + 0.5;
+    if (c.speed !== 1) {
+      const ye = Math.max(0, yOf(Math.min(next, b1 + 1)));
+      ctx.fillStyle = strip(c.speed);
+      ctx.globalAlpha = 0.55;
+      ctx.fillRect(cols.ruler.x + cols.ruler.w - 4, ye, 3, y - ye);
+      ctx.globalAlpha = 1;
+    }
+    ctx.fillStyle = strip(c.speed);
+    ctx.globalAlpha = 0.7;
+    ctx.fillRect(left, y - 0.5, W - left, 1);
+    ctx.globalAlpha = 1;
+    ctx.font = '600 10px system-ui, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'top';
+    ctx.fillText(`SCROLL ×${round(c.speed, 3)}`, cols.ruler.x + cols.ruler.w - 6, y + 2);
+  });
 
   // notes
   const visible = (n) => (n.endBeat ?? n.beat) >= b0 - 1 && n.beat <= b1 + 1;
@@ -1446,7 +1486,8 @@ function syncInputs() {
   $('artist').value = doc.artist;
   $('difficulty').value = doc.difficulty;
   $('bpm').value = doc.bpm;
-  renderBpmChanges();
+  renderChanges('bpm');
+  renderChanges('scroll');
   $('offset').value = doc.offset;
   $('bars').value = doc.bars;
   $('snap').value = String(view.snap);
@@ -1471,64 +1512,103 @@ function setTiming(key, value) {
 }
 $('bpm').addEventListener('change', (e) => setTiming('bpm', Math.min(400, Math.max(20, Number(e.target.value)))));
 
-// ---- BPM changes (songs whose tempo changes partway) ----
-// Notes stay on their beats when the tempo changes, like with BPM itself: put the change where the
-// song's tempo changes, set its BPM so the grid follows the waveform again, then place notes.
+// ---- BPM / scroll speed changes ----
+// BPM changes are for songs whose tempo changes partway. Notes stay on their beats when the tempo
+// changes, like with BPM itself: put the change where the song's tempo changes, set its BPM so the
+// grid follows the waveform again, then place notes.
+// Scroll speed changes set how fast notes move from that beat on (1 normal, 2 twice as fast,
+// 0 stopped, negative backwards); timing doesn't change.
 
-const clampBpm = (v) => Math.min(400, Math.max(20, v));
+const CHANGES = {
+  bpm: {
+    list: () => doc.bpms,
+    value: 'bpm',
+    el: 'bpm-changes',
+    min: 20,
+    max: 400,
+    step: 0.01,
+    first: 1e-9, // beat 0's BPM is the BPM field
+    at: (beat) => round(tm().bpmAt(beat), 2),
+    name: 'BPM 変更',
+  },
+  scroll: {
+    list: () => doc.scrolls,
+    value: 'speed',
+    el: 'scroll-changes',
+    min: -10,
+    max: 10,
+    step: 0.05,
+    first: 0,
+    at: (beat) => scrollAt(beat),
+    name: 'スクロール速度の変更',
+  },
+};
 
-function renderBpmChanges() {
-  const el = $('bpm-changes');
-  el.innerHTML = doc.bpms
+// The scroll speed in force at a beat (1 before any change).
+function scrollAt(beat) {
+  let v = 1;
+  for (const c of doc.scrolls) if (c.beat <= beat + 1e-9) v = c.speed;
+  return v;
+}
+
+function renderChanges(kind) {
+  const k = CHANGES[kind];
+  const el = $(k.el);
+  el.innerHTML = k
+    .list()
     .map(
-      (c, i) => `<div class="props-row bpm-change"><span>${formatBeat(c.beat)}</span>
-      <input type="number" data-bpmbeat="${i}" step="${1 / view.snap}" min="0" value="${round(c.beat)}" title="拍">
-      <input type="number" data-bpmval="${i}" step="0.01" min="20" max="400" value="${c.bpm}" title="BPM">
-      <button data-bpmdel="${i}" title="このBPM変更を削除">×</button></div>`,
+      (c, i) => `<div class="props-row change-row"><span>${formatBeat(c.beat)}</span>
+      <input type="number" data-cbeat="${i}" step="${1 / view.snap}" min="0" value="${round(c.beat)}" title="拍">
+      <input type="number" data-cval="${i}" step="${k.step}" min="${k.min}" max="${k.max}" value="${c[k.value]}" title="${k.name}">
+      <button data-cdel="${i}" title="この${k.name}を削除">×</button></div>`,
     )
     .join('');
-  for (const inp of el.querySelectorAll('[data-bpmbeat]')) {
+  for (const inp of el.querySelectorAll('[data-cbeat]')) {
     inp.addEventListener('change', () => {
+      const i = Number(inp.dataset.cbeat);
       const v = snapBeat(Number(inp.value));
-      if (!(v > 0) || doc.bpms.some((c, j) => j !== Number(inp.dataset.bpmbeat) && Math.abs(c.beat - v) < 1e-6)) {
-        toast('0拍目より後の、まだ変更のない拍にしてください');
-        return renderBpmChanges();
+      if (!(v >= k.first) || k.list().some((c, j) => j !== i && Math.abs(c.beat - v) < 1e-6)) {
+        toast(k.first > 0 ? '0拍目より後の、まだ変更のない拍にしてください' : 'まだ変更のない拍にしてください');
+        return renderChanges(kind);
       }
-      editTempo(() => (doc.bpms[Number(inp.dataset.bpmbeat)].beat = v));
+      editChanges(kind, () => (k.list()[i].beat = v));
     });
   }
-  for (const inp of el.querySelectorAll('[data-bpmval]')) {
+  for (const inp of el.querySelectorAll('[data-cval]')) {
     inp.addEventListener('change', () => {
       const v = Number(inp.value);
-      if (!Number.isFinite(v)) return renderBpmChanges();
-      editTempo(() => (doc.bpms[Number(inp.dataset.bpmval)].bpm = clampBpm(v)));
+      if (!Number.isFinite(v)) return renderChanges(kind);
+      editChanges(kind, () => (k.list()[Number(inp.dataset.cval)][k.value] = round(Math.min(k.max, Math.max(k.min, v)), 3)));
     });
   }
-  for (const b of el.querySelectorAll('[data-bpmdel]')) {
-    b.addEventListener('click', () => editTempo(() => doc.bpms.splice(Number(b.dataset.bpmdel), 1)));
+  for (const b of el.querySelectorAll('[data-cdel]')) {
+    b.addEventListener('click', () => editChanges(kind, () => k.list().splice(Number(b.dataset.cdel), 1)));
   }
 }
 
-function editTempo(fn) {
+function editChanges(kind, fn) {
   remember();
   fn();
-  doc.bpms.sort((a, b) => a.beat - b.beat);
+  CHANGES[kind].list().sort((a, b) => a.beat - b.beat);
   syncInputs();
   changed();
 }
 
-// A change at the playhead, starting at the BPM already there.
-$('add-bpm').addEventListener('click', () => {
+// A change at the playhead, starting at the value already there.
+function addChange(kind) {
+  const k = CHANGES[kind];
   const beat = snapBeat(view.beat);
-  if (beat <= 0) return toast('BPM変更は0拍目より後に置けます（0拍目の BPM は上の欄）');
-  if (doc.bpms.some((c) => Math.abs(c.beat - beat) < 1e-6)) return toast('この拍にはもう BPM 変更があります');
-  editTempo(() => doc.bpms.push({ beat, bpm: round(tm().bpmAt(beat), 2) }));
-  const i = doc.bpms.findIndex((c) => c.beat === beat);
-  const inp = document.querySelector(`[data-bpmval="${i}"]`);
+  if (beat < k.first) return toast(kind === 'bpm' ? 'BPM変更は0拍目より後に置けます（0拍目の BPM は上の欄）' : '0拍目以降に置けます');
+  if (k.list().some((c) => Math.abs(c.beat - beat) < 1e-6)) return toast(`この拍にはもう${k.name}があります`);
+  editChanges(kind, () => k.list().push({ beat, [k.value]: k.at(beat) }));
+  const i = k.list().findIndex((c) => c.beat === beat);
+  const inp = $(k.el).querySelector(`[data-cval="${i}"]`);
   inp?.focus();
   inp?.select();
-  toast(`${formatBeat(beat)} に BPM 変更を追加しました`);
-});
+  toast(`${formatBeat(beat)} に${k.name}を追加しました`);
+}
+$('add-bpm').addEventListener('click', () => addChange('bpm'));
+$('add-scroll').addEventListener('click', () => addChange('scroll'));
 $('offset').addEventListener('change', (e) => setTiming('offset', Math.round(Number(e.target.value))));
 $('bars').addEventListener('change', (e) => setTiming('bars', Math.max(1, Math.round(Number(e.target.value)))));
 for (const b of document.querySelectorAll('[data-nudge]')) {
