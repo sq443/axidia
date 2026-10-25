@@ -532,3 +532,11 @@ main {
 [hidden] {
   display: none !important;
 }
+
+.bpm-change input[type="number"] {
+  width: 72px;
+}
+
+.bpm-change button {
+  padding: 3px 8px;
+}

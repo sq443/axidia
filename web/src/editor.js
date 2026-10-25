@@ -2,6 +2,7 @@
 // and saved as the chart JSON that songs.js loads.
 import { Game, makeSeg, SLIDE_LEAD_BEATS, DECOR_DEFAULT, DECOR_PROPS, decorState, strokeDecor } from './game.js';
 import { normalizeChart } from './songs.js';
+import { tempoMap } from './tempo.js';
 import { generateChart } from './chart.js';
 import { Music, trackFor, click } from './music.js';
 import * as sfx from './sfx.js';
@@ -21,14 +22,25 @@ const HISTORY = 200;
 
 // ---- document ----
 
-const newDoc = () => ({ title: '', artist: '', difficulty: 'NORMAL', bpm: 140, offset: 0, bars: 32, notes: [] });
+// bpms: BPM changes after beat 0, [{ beat, bpm }] sorted (doc.bpm holds from beat 0).
+const newDoc = () => ({ title: '', artist: '', difficulty: 'NORMAL', bpm: 140, bpms: [], offset: 0, bars: 32, notes: [] });
 let doc = loadDraft() ?? newDoc();
 let nextId = 1;
 doc.notes.forEach((n) => (n.id = nextId++));
 
-const beatMs = () => 60000 / doc.bpm;
-const msOf = (beat) => doc.offset + beat * beatMs();
-const beatOf = (ms) => (ms - doc.offset) / beatMs();
+// Beats ↔ ms through the tempo map, rebuilt whenever BPM / OFFSET / the BPM changes differ.
+let tempo = null;
+let tempoKey = '';
+function tm() {
+  const key = `${doc.bpm}|${doc.offset}|${doc.bpms.map((c) => `${c.beat}:${c.bpm}`).join()}`;
+  if (key !== tempoKey) {
+    tempo = tempoMap(doc.bpm, doc.bpms, doc.offset);
+    tempoKey = key;
+  }
+  return tempo;
+}
+const msOf = (beat) => tm().msOf(beat);
+const beatOf = (ms) => tm().beatOf(ms);
 
 function loadDraft() {
   try {
@@ -87,15 +99,17 @@ function exportJSON() {
     }),
   }));
   const { title, artist, difficulty, bpm, offset } = doc;
-  return { title, artist, difficulty, bpm, offset, notes, ...(decor.length ? { decor } : {}) };
+  const bpms = doc.bpms.map((c) => ({ beat: round(c.beat), bpm: c.bpm }));
+  return { title, artist, difficulty, bpm, offset, ...(bpms.length ? { bpms } : {}), notes, ...(decor.length ? { decor } : {}) };
 }
 
 // Chart JSON (beats or ms) → document.
 function importJSON(json) {
   const d = { ...newDoc(), title: json.title ?? '', artist: json.artist ?? '', bpm: json.bpm ?? 140, offset: json.offset ?? 0 };
   if (DIFFS.includes(json.difficulty)) d.difficulty = json.difficulty;
-  const bms = 60000 / d.bpm;
-  const toBeat = (ms, beat) => beat ?? (ms - d.offset) / bms;
+  d.bpms = (json.bpms ?? []).filter((c) => c.beat > 0 && c.bpm > 0).map((c) => ({ beat: c.beat, bpm: c.bpm })).sort((a, b) => a.beat - b.beat);
+  const map = tempoMap(d.bpm, d.bpms, d.offset);
+  const toBeat = (ms, beat) => beat ?? map.beatOf(ms);
   d.notes = (json.notes ?? []).map((n) => {
     const note = { type: n.type, beat: toBeat(n.time, n.beat) };
     if (n.type === 'tap' || n.type === 'hold' || n.type === 'drag') Object.assign(note, { side: n.side ?? 'bottom', x: n.x ?? 0.5 });
@@ -129,7 +143,7 @@ function setDoc(d) {
 
 const undoStack = [];
 const redoStack = [];
-const snapshot = () => JSON.stringify({ notes: doc.notes, bpm: doc.bpm, offset: doc.offset, bars: doc.bars });
+const snapshot = () => JSON.stringify({ notes: doc.notes, bpm: doc.bpm, bpms: doc.bpms, offset: doc.offset, bars: doc.bars });
 
 // Call before every change.
 function remember() {
@@ -298,6 +312,19 @@ function render() {
       ctx.textBaseline = 'middle';
       ctx.fillText(String(beat / 4 + 1), 6, y);
     }
+  }
+
+  // tempo: where each BPM holds from
+  for (const sg of tm().segs) {
+    if (sg.beat < b0 - 1 || sg.beat > b1 + 1) continue;
+    const y = Math.round(yOf(sg.beat)) + 0.5;
+    ctx.fillStyle = sg.beat > 0 ? 'rgba(255,159,67,0.8)' : 'rgba(255,159,67,0.35)';
+    ctx.fillRect(left, y - 0.5, W - left, 2);
+    ctx.font = '600 10px system-ui, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'bottom';
+    ctx.fillStyle = '#ff9f43';
+    ctx.fillText(`BPM ${round(sg.bpm, 2)}`, cols.ruler.x + cols.ruler.w - 2, y - 2);
   }
 
   // notes
@@ -1400,6 +1427,7 @@ function syncInputs() {
   $('artist').value = doc.artist;
   $('difficulty').value = doc.difficulty;
   $('bpm').value = doc.bpm;
+  renderBpmChanges();
   $('offset').value = doc.offset;
   $('bars').value = doc.bars;
   $('snap').value = String(view.snap);
@@ -1423,6 +1451,65 @@ function setTiming(key, value) {
   if (!audio && key !== 'offset') synthPeaks(); // the generated music follows BPM and length
 }
 $('bpm').addEventListener('change', (e) => setTiming('bpm', Math.min(400, Math.max(20, Number(e.target.value)))));
+
+// ---- BPM changes (songs whose tempo changes partway) ----
+// Notes stay on their beats when the tempo changes, like with BPM itself: put the change where the
+// song's tempo changes, set its BPM so the grid follows the waveform again, then place notes.
+
+const clampBpm = (v) => Math.min(400, Math.max(20, v));
+
+function renderBpmChanges() {
+  const el = $('bpm-changes');
+  el.innerHTML = doc.bpms
+    .map(
+      (c, i) => `<div class="props-row bpm-change"><span>${formatBeat(c.beat)}</span>
+      <input type="number" data-bpmbeat="${i}" step="${1 / view.snap}" min="0" value="${round(c.beat)}" title="拍">
+      <input type="number" data-bpmval="${i}" step="0.01" min="20" max="400" value="${c.bpm}" title="BPM">
+      <button data-bpmdel="${i}" title="このBPM変更を削除">×</button></div>`,
+    )
+    .join('');
+  for (const inp of el.querySelectorAll('[data-bpmbeat]')) {
+    inp.addEventListener('change', () => {
+      const v = snapBeat(Number(inp.value));
+      if (!(v > 0) || doc.bpms.some((c, j) => j !== Number(inp.dataset.bpmbeat) && Math.abs(c.beat - v) < 1e-6)) {
+        toast('0拍目より後の、まだ変更のない拍にしてください');
+        return renderBpmChanges();
+      }
+      editTempo(() => (doc.bpms[Number(inp.dataset.bpmbeat)].beat = v));
+    });
+  }
+  for (const inp of el.querySelectorAll('[data-bpmval]')) {
+    inp.addEventListener('change', () => {
+      const v = Number(inp.value);
+      if (!Number.isFinite(v)) return renderBpmChanges();
+      editTempo(() => (doc.bpms[Number(inp.dataset.bpmval)].bpm = clampBpm(v)));
+    });
+  }
+  for (const b of el.querySelectorAll('[data-bpmdel]')) {
+    b.addEventListener('click', () => editTempo(() => doc.bpms.splice(Number(b.dataset.bpmdel), 1)));
+  }
+}
+
+function editTempo(fn) {
+  remember();
+  fn();
+  doc.bpms.sort((a, b) => a.beat - b.beat);
+  syncInputs();
+  changed();
+}
+
+// A change at the playhead, starting at the BPM already there.
+$('add-bpm').addEventListener('click', () => {
+  const beat = snapBeat(view.beat);
+  if (beat <= 0) return toast('BPM変更は0拍目より後に置けます（0拍目の BPM は上の欄）');
+  if (doc.bpms.some((c) => Math.abs(c.beat - beat) < 1e-6)) return toast('この拍にはもう BPM 変更があります');
+  editTempo(() => doc.bpms.push({ beat, bpm: round(tm().bpmAt(beat), 2) }));
+  const i = doc.bpms.findIndex((c) => c.beat === beat);
+  const inp = document.querySelector(`[data-bpmval="${i}"]`);
+  inp?.focus();
+  inp?.select();
+  toast(`${formatBeat(beat)} に BPM 変更を追加しました`);
+});
 $('offset').addEventListener('change', (e) => setTiming('offset', Math.round(Number(e.target.value))));
 $('bars').addEventListener('change', (e) => setTiming('bars', Math.max(1, Math.round(Number(e.target.value)))));
 for (const b of document.querySelectorAll('[data-nudge]')) {

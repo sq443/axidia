@@ -10,6 +10,8 @@
 // Chart JSON: { "bpm": 128, "offset": 0, "notes": [ { "type": "tap", "side": "bottom", "beat": 4, "x": 0.5 }, … ] }
 //   Each note takes either `time` (ms from the start of the audio) or `beat` (beats after `offset` ms);
 //   hold / slide ends likewise take `end` (ms) or `endBeat`. Other fields are as in chart.js.
+//   Optional "bpms": [{ "beat": 64, "bpm": 180 }, …] changes the BPM from that beat on.
+import { tempoMap } from './tempo.js';
 import { generateChart } from './chart.js';
 import { trackFor } from './music.js';
 import { decode as decodeWith } from './sfx.js';
@@ -67,13 +69,17 @@ function decode(data) {
 // Chart JSON → the chart object the game plays (times in ms). Also used by the chart editor.
 export function normalizeChart(json) {
   const beatMs = 60000 / json.bpm;
-  const at = (ms, beat) => ms ?? (json.offset ?? 0) + beat * beatMs;
+  const tempo = tempoMap(json.bpm, json.bpms, json.offset ?? 0);
+  const at = (ms, beat) => ms ?? tempo.msOf(beat);
   const notes = json.notes
     .map(({ beat, endBeat, ...n }) => {
       const note = { side: 'bottom', x: 0.5, ...n, time: at(n.time, beat) };
       if (note.type === 'hold' || note.type === 'slide') note.end = at(n.end, endBeat);
       if (note.type === 'flick') note.side = 'center';
-      if (note.type === 'slide') note.side = 'free';
+      if (note.type === 'slide') {
+        note.side = 'free';
+        note.beatMs = 60000 / tempo.bpmAt(beat ?? tempo.beatOf(note.time)); // its guide leads by beats at this tempo
+      }
       return note;
     })
     .sort((a, b) => a.time - b.time || a.x - b.x);

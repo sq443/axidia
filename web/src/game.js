@@ -376,7 +376,7 @@ export class Game {
   }
 
   slideActive(sl, t) {
-    return t >= sl.time - this.chart.beatMs * SLIDE_LEAD_BEATS && t <= sl.end + SLIDE_END.GREAT;
+    return t >= sl.time - (sl.beatMs ?? this.chart.beatMs) * SLIDE_LEAD_BEATS && t <= sl.end + SLIDE_END.GREAT;
   }
 
   // Midpoints every ~MID_SPACING px along each segment, including each relay corner (so corners
@@ -587,7 +587,7 @@ export class Game {
 
     // slides (from one beat before they start) and flicks sit underneath everything that moves
     for (const sl of this.slides) {
-      if (t >= sl.time - this.chart.beatMs * SLIDE_LEAD_BEATS && t <= sl.end + 250) this.drawSlide(sl, t);
+      if (t >= sl.time - (sl.beatMs ?? this.chart.beatMs) * SLIDE_LEAD_BEATS && t <= sl.end + 250) this.drawSlide(sl, t);
     }
     for (let i = this.head; i < this.notes.length; i++) {
       const n = this.notes[i];
@@ -669,7 +669,7 @@ export class Game {
   // demo dot runs again over the whole slide.
   drawSlide(sl, t) {
     const { ctx } = this;
-    const beat = this.chart.beatMs;
+    const beat = sl.beatMs ?? this.chart.beatMs; // at the slide's own tempo
     const { pts, total } = this.pathGeo(sl);
     const a = pts[0];
     const b = pts[pts.length - 1];
