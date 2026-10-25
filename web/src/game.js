@@ -1010,11 +1010,18 @@ function line(ctx, x1, y1, x2, y2) {
 
 // ---- decoration diamonds ----
 // A decoration is an outlined diamond behind the notes, animated by keys: { x, y, size, rotation,
-// opacity } at given times, changing linearly from key to key; it exists from its first key to its
-// last. x is a fraction of the field width (0 = left edge), y of the screen height (0 = top), size
+// opacity } at given times, changing from key to key by the key's `ease` (see DECOR_EASE); it
+// exists from its first key to its last. x is a fraction of the field width (0 = left edge), y of the screen height (0 = top), size
 // the half-diagonal as a fraction of the screen height, rotation in degrees, opacity 0..1.
 export const DECOR_DEFAULT = { x: 0.5, y: 0.5, size: 0.3, rotation: 0, opacity: 0.3 };
 export const DECOR_PROPS = Object.keys(DECOR_DEFAULT);
+// How a key's values change toward the next key's, as progress 0..1 → 0..1 (quadratic curves).
+export const DECOR_EASE = {
+  linear: (k) => k, // constant speed
+  in: (k) => k * k, // accelerating
+  out: (k) => 1 - (1 - k) * (1 - k), // decelerating
+  inout: (k) => (k < 0.5 ? 2 * k * k : 1 - 2 * (1 - k) * (1 - k)), // accelerating, then decelerating
+};
 
 // The state at time t (keys sorted by `at`), or null outside the first..last key. Two keys at the
 // same time make a jump.
@@ -1025,7 +1032,7 @@ export function decorState(keys, t, at = (k) => k.time) {
   const a = keys[i];
   const b = keys[i + 1] ?? a;
   const span = at(b) - at(a);
-  const k = span > 0 ? Math.min(1, (t - at(a)) / span) : 1;
+  const k = (DECOR_EASE[a.ease] ?? DECOR_EASE.linear)(span > 0 ? Math.min(1, (t - at(a)) / span) : 1);
   const st = {};
   for (const p of DECOR_PROPS) st[p] = (a[p] ?? DECOR_DEFAULT[p]) + ((b[p] ?? DECOR_DEFAULT[p]) - (a[p] ?? DECOR_DEFAULT[p])) * k;
   return st;

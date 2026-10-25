@@ -66,7 +66,8 @@ function saveDraft() {
 const strip = ({ id, ...n }) => n;
 
 // Decoration diamonds live in doc.notes as { type: 'decor', beat, endBeat, keys }: each key has
-// `t`, beats after the first key (so moving / copying the item moves its keys), plus DECOR_PROPS.
+// `t`, beats after the first key (so moving / copying the item moves its keys), plus DECOR_PROPS and
+// `ease` (how it changes toward the next key; absent = linear).
 // beat / endBeat are the first / last key. The chart JSON keeps them apart, in `decor`.
 const isDecor = (n) => n.type === 'decor';
 const keyBeat = (n, k) => n.beat + k.t;
@@ -95,6 +96,7 @@ function exportJSON() {
     keys: n.keys.map((k) => {
       const out = { beat: round(keyBeat(n, k)) };
       for (const p of DECOR_PROPS) out[p] = round(k[p], 3);
+      if (k.ease && k.ease !== 'linear') out.ease = k.ease;
       return out;
     }),
   }));
@@ -1183,6 +1185,8 @@ const DECOR_FIELDS = [
   { p: 'opacity', label: '不透明度', min: 0, max: 1, step: 0.01 },
 ];
 
+const EASE_LABEL = { linear: '等速', in: '加速', out: '減速', inout: '加減速' };
+
 function renderDecorProps(body, n) {
   decorKey = Math.min(decorKey, n.keys.length - 1);
   const k = n.keys[decorKey];
@@ -1198,13 +1202,18 @@ function renderDecorProps(body, n) {
       <input type="range" data-dr="${f.p}" min="${f.min}" max="${f.max}" step="${f.step}" value="${k[f.p]}">
       <input type="number" data-dn="${f.p}" step="${f.step}" value="${round(k[f.p], 3)}"></div>`);
   }
+  const last = decorKey === n.keys.length - 1;
+  rows.push(`<div class="props-row"><span title="次のキーまでの変化のしかた">変化</span><div class="seg ease">${Object.entries(EASE_LABEL)
+    .map(([e, label]) => `<button data-ease="${e}" aria-pressed="${!last && (k.ease ?? 'linear') === e}" ${last ? 'disabled' : ''}>${label}</button>`)
+    .join('')}</div></div>`);
+  if (last) rows.push('<p class="tip">最後のキーです（変化のしかたは、その前のキーで選びます）。</p>');
   rows.push('<canvas id="decor-preview" class="decor-preview" title="ドラッグで位置を動かす"></canvas>');
   rows.push(`<p class="tip" id="decor-preview-label"></p>`);
   rows.push(`<div class="buttons"><button id="d-add" title="赤い線の位置にキーを足す（その時点の状態で）">キーを追加</button>
     <button id="d-remove">このキーを削除</button></div>`);
   rows.push(`<div class="buttons"><button id="p-copy">コピー</button><button id="p-mirror">左右反転</button>
     <button id="p-delete">削除 (Del)</button></div>`);
-  rows.push('<p class="tip">キーとキーの間は直線的に変化します。DECOR 列の◇（キー）を上下にドラッグでタイミングを移動、同じ拍に2つ重ねると瞬間的に切り替わります。プレビューはこのキーの拍の画面で、ドラッグで位置を動かせます。</p>');
+  rows.push('<p class="tip">キーとキーの間は、前のキーの「変化」で選んだしかた（等速・加速・減速・加減速）で変わります。DECOR 列の◇（キー）を上下にドラッグでタイミングを移動、同じ拍に2つ重ねると瞬間的に切り替わります。プレビューはこのキーの拍の画面で、ドラッグで位置を動かせます。</p>');
   body.innerHTML = rows.join('');
 
   const edit = (fn) => {
@@ -1212,6 +1221,14 @@ function renderDecorProps(body, n) {
     fn();
     changed();
   };
+  for (const b of body.querySelectorAll('[data-ease]')) {
+    b.addEventListener('click', () =>
+      edit(() => {
+        if (b.dataset.ease === 'linear') delete k.ease;
+        else k.ease = b.dataset.ease;
+      }),
+    );
+  }
   const keep = () => (lastDecor = Object.fromEntries(DECOR_PROPS.map((p) => [p, k[p]])));
   for (const b of body.querySelectorAll('[data-key]')) {
     b.addEventListener('click', () => {
@@ -1288,6 +1305,8 @@ function addDecorKey(n) {
   const key = { t: 0 };
   for (const p of DECOR_PROPS) key[p] = round(st[p], 3);
   const i = beats.filter((b) => b < beat).length;
+  const prev = n.keys[i - 1];
+  if (prev?.ease && i < n.keys.length) key.ease = prev.ease; // splitting a curve: both halves keep its kind
   n.keys.splice(i, 0, key);
   beats.splice(i, 0, beat);
   setKeyBeats(n, beats);
